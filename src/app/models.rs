@@ -66,7 +66,7 @@ impl std::fmt::Display for QualityControlVersion {
 
 /// Information about a MIDAS dataset extracted from file paths
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DatasetInfo {
+pub struct DatasetFileInfo {
     /// Dataset name (e.g., "uk-daily-temperature-obs")
     pub dataset_name: String,
     /// Version string (e.g., "202407")
@@ -85,7 +85,7 @@ pub struct DatasetInfo {
     pub file_type: Option<String>,
 }
 
-impl DatasetInfo {
+impl DatasetFileInfo {
     /// Parse dataset information from a file path
     ///
     /// # Arguments
@@ -237,7 +237,7 @@ impl DatasetInfo {
             });
         }
 
-        Ok(DatasetInfo {
+        Ok(DatasetFileInfo {
             dataset_name,
             version,
             county,
@@ -283,7 +283,7 @@ pub struct FileInfo {
     /// Extracted filename for display/logging
     pub file_name: String,
     /// Parsed dataset metadata
-    pub dataset_info: DatasetInfo,
+    pub dataset_info: DatasetFileInfo,
     /// Number of retry attempts for this file
     pub retry_count: u32,
     /// Timestamp of last download attempt (skipped during serialization)
@@ -313,7 +313,7 @@ impl FileInfo {
         destination_root: &Path,
     ) -> ManifestResult<Self> {
         // Parse dataset info from path
-        let dataset_info = DatasetInfo::from_path(&relative_path)?;
+        let dataset_info = DatasetFileInfo::from_path(&relative_path)?;
 
         // Extract filename
         let file_name = Path::new(&relative_path)
@@ -512,7 +512,7 @@ mod tests {
     fn test_dataset_info_parsing() {
         // Test example from real manifest
         let path = "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/qc-version-1/midas-open_uk-daily-temperature-obs_dv-202407_devon_01381_twist_qcv-1_1980.csv";
-        let dataset_info = DatasetInfo::from_path(path).unwrap();
+        let dataset_info = DatasetFileInfo::from_path(path).unwrap();
 
         assert_eq!(dataset_info.dataset_name, "uk-daily-temperature-obs");
         assert_eq!(dataset_info.version, "202407");
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn test_dataset_info_capability_file() {
         let path = "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/midas-open_uk-daily-temperature-obs_dv-202407_devon_01381_twist_capability.csv";
-        let dataset_info = DatasetInfo::from_path(path).unwrap();
+        let dataset_info = DatasetFileInfo::from_path(path).unwrap();
 
         assert_eq!(dataset_info.dataset_name, "uk-daily-temperature-obs");
         assert_eq!(dataset_info.version, "202407");
@@ -545,11 +545,11 @@ mod tests {
     #[test]
     fn test_invalid_dataset_paths() {
         // Too short
-        assert!(DatasetInfo::from_path("./data").is_err());
-        assert!(DatasetInfo::from_path("./invalid").is_err());
+        assert!(DatasetFileInfo::from_path("./data").is_err());
+        assert!(DatasetFileInfo::from_path("./invalid").is_err());
 
         // Doesn't start with data
-        assert!(DatasetInfo::from_path("./other/dataset/file.csv").is_err());
+        assert!(DatasetFileInfo::from_path("./other/dataset/file.csv").is_err());
     }
 
     #[test]
@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn test_dataset_info_display_name() {
-        let dataset_info = DatasetInfo {
+        let dataset_info = DatasetFileInfo {
             dataset_name: "uk-daily-temperature-obs".to_string(),
             version: "202407".to_string(),
             county: Some("devon".to_string()),
@@ -772,7 +772,7 @@ mod tests {
     fn test_dataset_info_with_qcv0_parsing() {
         // Test with QC version 0 (from real manifest)
         let path = "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01373_clyst-honiton/qc-version-0/midas-open_uk-daily-temperature-obs_dv-202407_devon_01373_clyst-honiton_qcv-0_1997.csv";
-        let dataset_info = DatasetInfo::from_path(path).unwrap();
+        let dataset_info = DatasetFileInfo::from_path(path).unwrap();
 
         assert_eq!(dataset_info.dataset_name, "uk-daily-temperature-obs");
         assert_eq!(dataset_info.version, "202407");

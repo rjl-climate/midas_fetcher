@@ -49,7 +49,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::terminal;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -153,6 +152,50 @@ pub struct ProgressDisplay {
     event_tx: Option<mpsc::UnboundedSender<ProgressEvent>>,
     shutdown_tx: Option<broadcast::Sender<()>>,
     is_terminal: bool,
+    // Rate calculation tracking
+    rate_tracking: Arc<RwLock<RateTracker>>,
+}
+
+/// Track download rate manually for clean integer display
+#[derive(Debug)]
+struct RateTracker {
+    rate_samples: Vec<(Instant, u64)>,
+}
+
+impl RateTracker {
+    fn new() -> Self {
+        Self {
+            rate_samples: Vec::new(),
+        }
+    }
+
+    fn update(&mut self, current_position: u64) -> u32 {
+        let now = Instant::now();
+
+        // Add current sample
+        self.rate_samples.push((now, current_position));
+
+        // Keep only samples from last 5 seconds for rate calculation
+        let cutoff = now - Duration::from_secs(5);
+        self.rate_samples.retain(|(time, _)| *time > cutoff);
+
+        // Calculate rate from samples
+        if self.rate_samples.len() >= 2 {
+            let oldest = &self.rate_samples[0];
+            let newest = &self.rate_samples[self.rate_samples.len() - 1];
+
+            let time_diff = newest.0.duration_since(oldest.0).as_secs_f64();
+            let position_diff = newest.1.saturating_sub(oldest.1);
+
+            if time_diff > 0.0 {
+                (position_diff as f64 / time_diff).round() as u32
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    }
 }
 
 impl ProgressDisplay {
@@ -171,6 +214,7 @@ impl ProgressDisplay {
             event_tx: None,
             shutdown_tx: None,
             is_terminal,
+            rate_tracking: Arc::new(RwLock::new(RateTracker::new())),
         }
     }
 
@@ -190,9 +234,8 @@ impl ProgressDisplay {
             return self.start_text_mode(total_files, worker_count).await;
         }
 
-        // Setup terminal
-        terminal::enable_raw_mode()
-            .map_err(|e| DownloadError::Other(format!("Failed to enable raw mode: {}", e)))?;
+        // Note: We intentionally DON'T enable raw mode to allow Ctrl-C to work properly
+        // Progress bars work fine without raw mode, and this allows signal handling
 
         // Create multi-progress manager
         let multi = MultiProgress::new();
@@ -201,19 +244,18 @@ impl ProgressDisplay {
         let main_pb = multi.add(ProgressBar::new(total_files as u64));
         main_pb.set_style(
             ProgressStyle::default_bar()
-                .template(if self.config.show_eta && self.config.show_download_rate {
-                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {bytes_per_sec}"
-                } else if self.config.show_eta {
-                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})"
-                } else if self.config.show_download_rate {
-                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {bytes_per_sec}"
+                .template(if self.config.show_eta {
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} (ETA: {eta}) {msg}"
                 } else {
-                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}"
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}"
                 })
                 .map_err(|e| DownloadError::Other(format!("Progress bar template error: {}", e)))?
                 .progress_chars("##-")
         );
-        main_pb.set_message("Downloading MIDAS files");
+
+        // Enable steady tick to ensure ETA calculations work properly
+        main_pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        // Don't set initial message - let template show rate calculation
 
         // Create worker progress bars if enabled
         let mut worker_bars = HashMap::new();
@@ -348,6 +390,33 @@ impl ProgressDisplay {
         Ok(())
     }
 
+    /// Update the progress display with coordinator stats
+    pub async fn update_with_stats(&self, completed: usize, failed: usize) -> DownloadResult<()> {
+        if let Some(main_pb) = &self.main_progress {
+            // Update the main progress bar position
+            main_pb.set_position(completed as u64);
+
+            // Calculate rate manually for clean integer display
+            let rate = {
+                let mut tracker = self.rate_tracking.write().await;
+                tracker.update(completed as u64)
+            };
+
+            // Set message with rate and failure info if needed
+            if self.config.show_download_rate {
+                let message = if failed > 0 {
+                    format!("{}/s {} failed", rate, failed)
+                } else {
+                    format!("{}/s", rate)
+                };
+                main_pb.set_message(message);
+            } else if failed > 0 {
+                main_pb.set_message(format!("{} failed", failed));
+            }
+        }
+        Ok(())
+    }
+
     /// Finish the progress display and cleanup
     pub async fn finish(&mut self) -> DownloadResult<()> {
         debug!("Finishing progress display");
@@ -362,7 +431,7 @@ impl ProgressDisplay {
             let _ = task.await;
         }
 
-        // Cleanup terminal
+        // Cleanup progress bars
         if self.config.enable_progress_bars && self.is_terminal {
             if let Some(main_pb) = &self.main_progress {
                 main_pb.finish_with_message("Download completed");
@@ -372,8 +441,7 @@ impl ProgressDisplay {
                 worker_pb.finish_and_clear();
             }
 
-            terminal::disable_raw_mode()
-                .map_err(|e| DownloadError::Other(format!("Failed to disable raw mode: {}", e)))?;
+            // Note: No need to disable raw mode since we don't enable it
         }
 
         // Final statistics report
@@ -576,14 +644,10 @@ impl ProgressDisplay {
                     *stats_guard = new_stats.clone();
                 }
 
-                // Update main progress bar with rate information
+                // Update main progress bar position
                 if let Some(pb) = main_pb {
                     pb.set_position(new_stats.files_completed as u64);
-
-                    if new_stats.download_rate_bps > 0.0 {
-                        let rate_mb = new_stats.download_rate_bps / (1024.0 * 1024.0);
-                        pb.set_message(format!("Downloading at {:.1} MB/s", rate_mb));
-                    }
+                    // Let template handle rate calculation automatically
                 }
             }
 
@@ -613,32 +677,18 @@ impl ProgressDisplay {
         if let Some(pb) = main_pb {
             let stats_guard = stats.read().await;
 
-            // Update position and rate
+            // Update position - let template calculate rate automatically
             pb.set_position(stats_guard.files_completed as u64);
 
-            if stats_guard.download_rate_bps > 0.0 {
-                let rate_mb = stats_guard.download_rate_bps / (1024.0 * 1024.0);
-                if let Some(eta) = &stats_guard.estimated_completion {
-                    let now = chrono::Utc::now();
-                    let eta_duration = eta
-                        .signed_duration_since(now)
-                        .to_std()
-                        .unwrap_or(Duration::ZERO);
-                    pb.set_message(format!("📥 {:.1} MB/s (ETA: {:?})", rate_mb, eta_duration));
-                } else {
-                    pb.set_message(format!("📥 {:.1} MB/s", rate_mb));
-                }
-            }
+            // Don't override the template's rate calculation with set_message
+            // The template will automatically show files/s based on position changes
         }
     }
 }
 
 impl Drop for ProgressDisplay {
     fn drop(&mut self) {
-        // Cleanup on drop
-        if self.config.enable_progress_bars && self.is_terminal {
-            let _ = terminal::disable_raw_mode();
-        }
+        // Cleanup on drop - no raw mode to disable since we don't enable it
     }
 }
 

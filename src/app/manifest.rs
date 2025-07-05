@@ -762,4 +762,381 @@ ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-temperature-obs/dataset-versio
         println!("   File Type: {:?}", dataset.file_type);
         println!("   Download URL: {}", download_url);
     }
+
+    /// Test that collect_datasets_and_years extracts dataset version years correctly
+    #[tokio::test]
+    async fn test_collect_datasets_version_years() {
+        // Create test manifest with 202507 version (should extract 2025 as dataset version year)
+        let content = r#"50c9d1c465f3cbff652be1509c2e2a4e  ./data/uk-daily-temperature-obs/dataset-version-202507/devon/01381_twist/qc-version-1/midas-open_uk-daily-temperature-obs_dv-202507_devon_01381_twist_qcv-1_1993.csv
+9734faa872681f96b144f60d29d52011  ./data/uk-daily-temperature-obs/dataset-version-202507/devon/01382_twist/qc-version-1/midas-open_uk-daily-temperature-obs_dv-202507_devon_01382_twist_qcv-1_1994.csv"#;
+
+        let manifest_file = create_test_manifest(content).await;
+        let datasets = collect_datasets_and_years(manifest_file.path())
+            .await
+            .unwrap();
+
+        assert_eq!(datasets.len(), 1);
+
+        let temp_dataset = datasets.get("uk-daily-temperature-obs").unwrap();
+
+        // Should extract "202507" as the complete dataset version, not "1993" or "1994" data years
+        assert_eq!(temp_dataset.versions, vec!["202507".to_string()]);
+        assert_eq!(temp_dataset.file_count, 2);
+    }
+
+    /// Test that filter_manifest_files returns all dataset files from manifest
+    #[tokio::test]
+    async fn test_filter_by_dataset_version_year() {
+        // Create test manifest with files from multiple dataset versions
+        // Note: In practice each manifest represents one dataset version, but this tests filtering
+        let content = r#"50c9d1c465f3cbff652be1509c2e2a4e  ./data/uk-daily-temperature-obs/dataset-version-202507/devon/01381_twist/qc-version-1/midas-open_uk-daily-temperature-obs_dv-202507_devon_01381_twist_qcv-1_1993.csv
+9734faa872681f96b144f60d29d52011  ./data/uk-daily-temperature-obs/dataset-version-202407/devon/01382_twist/qc-version-1/midas-open_uk-daily-temperature-obs_dv-202407_devon_01382_twist_qcv-1_1994.csv
+ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-temperature-obs/dataset-version-202507/devon/01383_twist/qc-version-1/midas-open_uk-daily-temperature-obs_dv-202507_devon_01383_twist_qcv-1_1995.csv"#;
+
+        let manifest_file = create_test_manifest(content).await;
+
+        // Filter by dataset only - should return ALL files for that dataset from the manifest
+        let files = filter_manifest_files(
+            manifest_file.path(),
+            Some("uk-daily-temperature-obs"),
+            None,
+            &crate::app::models::QualityControlVersion::V1,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Should return all 3 files (from both dataset versions in this manifest)
+        assert_eq!(files.len(), 3);
+
+        // Files can be from different dataset versions - that's expected now
+        let mut versions: Vec<String> = files
+            .iter()
+            .map(|f| f.dataset_info.version.clone())
+            .collect();
+        versions.sort();
+        versions.dedup();
+        assert!(versions.contains(&"202407".to_string()));
+        assert!(versions.contains(&"202507".to_string()));
+    }
+
+    /// Test complete workflow: dataset collection and filtering consistency
+    #[tokio::test]
+    async fn test_dataset_year_selection_and_filtering_consistency() {
+        // Create test manifest with multiple dataset versions
+        let content = r#"50c9d1c465f3cbff652be1509c2e2a4e  ./data/uk-daily-temperature-obs/dataset-version-202507/devon/01381_twist/qc-version-1/midas-open_uk-daily-temperature-obs_dv-202507_devon_01381_twist_qcv-1_1993.csv
+9734faa872681f96b144f60d29d52011  ./data/uk-daily-temperature-obs/dataset-version-202407/devon/01382_twist/qc-version-1/midas-open_uk-daily-temperature-obs_dv-202407_devon_01382_twist_qcv-1_1994.csv
+ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-rain-obs/dataset-version-202507/durham/01892_stanhope/qc-version-0/midas-open_uk-daily-rain-obs_dv-202507_durham_01892_stanhope_qcv-0_1995.csv"#;
+
+        let manifest_file = create_test_manifest(content).await;
+
+        // Step 1: Collect datasets and their versions from the manifest
+        let datasets = collect_datasets_and_years(manifest_file.path())
+            .await
+            .unwrap();
+
+        // Verify we get complete dataset versions, not data years
+        let temp_dataset = datasets.get("uk-daily-temperature-obs").unwrap();
+        assert_eq!(temp_dataset.versions, vec!["202407", "202507"]); // Complete dataset versions, not 1993, 1994
+
+        let rain_dataset = datasets.get("uk-daily-rain-obs").unwrap();
+        assert_eq!(rain_dataset.versions, vec!["202507"]); // Complete dataset version, not 1995
+
+        // Step 2: Test that filtering by dataset returns all files for that dataset
+        // (Note: No year-based filtering anymore - each manifest represents one time period)
+        let temp_files = filter_manifest_files(
+            manifest_file.path(),
+            Some("uk-daily-temperature-obs"),
+            None,
+            &crate::app::models::QualityControlVersion::V1,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Should find all temperature files (from both versions in this test manifest)
+        assert_eq!(temp_files.len(), 2, "Should find both temperature files");
+
+        // Verify files are from the expected dataset
+        for file in &temp_files {
+            assert_eq!(file.dataset_info.dataset_name, "uk-daily-temperature-obs");
+            assert!(temp_dataset.versions.contains(&file.dataset_info.version));
+        }
+
+        // Test rain dataset filtering
+        let rain_files = filter_manifest_files(
+            manifest_file.path(),
+            Some("uk-daily-rain-obs"),
+            None,
+            &crate::app::models::QualityControlVersion::V0, // Note: rain uses QCV0
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(rain_files.len(), 1, "Should find one rain file");
+        assert_eq!(rain_files[0].dataset_info.dataset_name, "uk-daily-rain-obs");
+        assert_eq!(rain_files[0].dataset_info.version, "202507");
+
+        println!("✅ Dataset collection and filtering are consistent!");
+        println!(
+            "   Temperature dataset versions: {:?}",
+            temp_dataset.versions
+        );
+        println!("   Rain dataset versions: {:?}", rain_dataset.versions);
+    }
+}
+
+/// Information about available datasets and versions from manifest analysis
+#[derive(Debug, Clone)]
+pub struct DatasetSummary {
+    /// Dataset name (e.g., "uk-daily-temperature-obs")
+    pub name: String,
+    /// Available dataset versions for this dataset (e.g., ["202407", "202507"])
+    pub versions: Vec<String>,
+    /// Available counties/regions
+    pub counties: Vec<String>,
+    /// Available quality control versions
+    pub quality_versions: Vec<crate::app::models::QualityControlVersion>,
+    /// Total number of files for this dataset
+    pub file_count: usize,
+    /// Example file for reference
+    pub example_file: Option<String>,
+}
+
+impl DatasetSummary {
+    /// Get the latest available version
+    pub fn latest_version(&self) -> Option<&String> {
+        self.versions.iter().max()
+    }
+
+    /// Get the latest available year (for backward compatibility)
+    pub fn latest_year(&self) -> Option<&String> {
+        self.latest_version()
+    }
+
+    /// Check if a specific version is available
+    pub fn has_version(&self, version: &str) -> bool {
+        self.versions.contains(&version.to_string())
+    }
+
+    /// Check if a specific year is available (for backward compatibility)
+    pub fn has_year(&self, year: &str) -> bool {
+        self.has_version(year)
+    }
+
+    /// Check if a specific county is available
+    pub fn has_county(&self, county: &str) -> bool {
+        self.counties.iter().any(|c| c == county)
+    }
+
+    /// Check if a specific quality version is available
+    pub fn has_quality_version(&self, qv: &crate::app::models::QualityControlVersion) -> bool {
+        self.quality_versions.contains(qv)
+    }
+}
+
+/// Collect available datasets and dataset versions from a manifest file
+///
+/// This function analyzes a manifest file to discover what datasets and
+/// dataset versions are available. It extracts complete dataset version
+/// strings from the directory structure (e.g., "dataset-version-202507" -> "202507")
+/// rather than individual data years from filenames.
+///
+/// # Arguments
+///
+/// * `manifest_path` - Path to the manifest file
+///
+/// # Returns
+///
+/// A map of dataset names to their available metadata
+///
+/// # Errors
+///
+/// Returns `ManifestError` if the manifest cannot be read or parsed
+pub async fn collect_datasets_and_years<P: AsRef<Path>>(
+    manifest_path: P,
+) -> ManifestResult<std::collections::HashMap<String, DatasetSummary>> {
+    use futures::StreamExt;
+    use std::collections::HashMap;
+
+    let config = ManifestConfig::default();
+    let mut streamer = ManifestStreamer::with_config(config);
+    let mut stream = streamer.stream(manifest_path).await?;
+
+    let mut datasets: HashMap<String, DatasetSummary> = HashMap::new();
+
+    while let Some(result) = stream.next().await {
+        let file_info = result?;
+        let dataset_info = &file_info.dataset_info;
+        let dataset_name = dataset_info.dataset_name.clone();
+
+        let entry = datasets
+            .entry(dataset_name.clone())
+            .or_insert_with(|| DatasetSummary {
+                name: dataset_name,
+                versions: Vec::new(),
+                counties: Vec::new(),
+                quality_versions: Vec::new(),
+                file_count: 0,
+                example_file: None,
+            });
+
+        // Update file count
+        entry.file_count += 1;
+
+        // Set example file if not already set
+        if entry.example_file.is_none() {
+            entry.example_file = Some(file_info.relative_path.clone());
+        }
+
+        // Collect complete dataset version strings
+        let version = &dataset_info.version;
+        if !entry.versions.contains(version) {
+            entry.versions.push(version.clone());
+        }
+
+        // Collect counties
+        if let Some(ref county) = dataset_info.county {
+            if !entry.counties.contains(county) {
+                entry.counties.push(county.clone());
+            }
+        }
+
+        // Collect quality versions
+        if let Some(ref qv) = dataset_info.quality_version {
+            if !entry.quality_versions.contains(qv) {
+                entry.quality_versions.push(qv.clone());
+            }
+        }
+    }
+
+    // Sort collected data for consistent output
+    for summary in datasets.values_mut() {
+        summary.versions.sort();
+        summary.counties.sort();
+        summary.quality_versions.sort_by_key(|qv| match qv {
+            crate::app::models::QualityControlVersion::V0 => 0,
+            crate::app::models::QualityControlVersion::V1 => 1,
+        });
+    }
+
+    debug!("Discovered {} datasets from manifest", datasets.len());
+
+    Ok(datasets)
+}
+
+/// Filter files from manifest based on criteria
+///
+/// # Arguments
+///
+/// * `manifest_path` - Path to the manifest file
+/// * `dataset_name` - Optional dataset filter
+/// * `county` - Optional county filter
+/// * `quality_version` - Quality control version to filter by
+/// * `metadata_only` - Only include metadata/capability files
+/// * `data_only` - Only include data files (exclude metadata)
+///
+/// # Returns
+///
+/// Vector of FileInfo matching the criteria
+pub async fn filter_manifest_files<P: AsRef<Path>>(
+    manifest_path: P,
+    dataset_name: Option<&str>,
+    county: Option<&str>,
+    quality_version: &crate::app::models::QualityControlVersion,
+    metadata_only: bool,
+    data_only: bool,
+) -> ManifestResult<Vec<FileInfo>> {
+    use futures::StreamExt;
+
+    let config = ManifestConfig::default();
+    let mut streamer = ManifestStreamer::with_config(config);
+    let mut stream = streamer.stream(manifest_path).await?;
+
+    let mut filtered_files = Vec::new();
+
+    while let Some(result) = stream.next().await {
+        let file_info = result?;
+        let dataset_info = &file_info.dataset_info;
+
+        // Apply dataset filter
+        if let Some(filter_dataset) = dataset_name {
+            if dataset_info.dataset_name != filter_dataset {
+                continue;
+            }
+        }
+
+        // Apply county filter
+        if let Some(filter_county) = county {
+            if dataset_info.county.as_ref() != Some(&filter_county.to_string()) {
+                continue;
+            }
+        }
+
+        // Apply quality version filter (only for data files)
+        if let Some(ref file_qv) = dataset_info.quality_version {
+            if file_qv != quality_version {
+                continue;
+            }
+        } else {
+            // File has no quality version (capability/metadata file)
+            // Include it unless data_only is specified
+            if data_only {
+                continue;
+            }
+        }
+
+        // Apply file type filters
+        if let Some(ref file_type) = dataset_info.file_type {
+            if metadata_only && file_type != "capability" && file_type != "metadata" {
+                continue;
+            }
+            if data_only && (file_type == "capability" || file_type == "metadata") {
+                continue;
+            }
+        }
+
+        filtered_files.push(file_info);
+    }
+
+    info!(
+        "Filtered to {} files matching criteria",
+        filtered_files.len()
+    );
+
+    Ok(filtered_files)
+}
+
+/// Get a summary of available options for interactive selection
+///
+/// # Arguments
+///
+/// * `manifest_path` - Path to the manifest file
+///
+/// # Returns
+///
+/// A tuple of (datasets, all_versions) for selection menus
+pub async fn get_selection_options<P: AsRef<Path>>(
+    manifest_path: P,
+) -> ManifestResult<(Vec<String>, Vec<String>)> {
+    use std::collections::HashSet;
+
+    let datasets_map = collect_datasets_and_years(manifest_path).await?;
+
+    let mut all_datasets: Vec<String> = datasets_map.keys().cloned().collect();
+    all_datasets.sort();
+
+    let mut all_versions: HashSet<String> = HashSet::new();
+    for summary in datasets_map.values() {
+        all_versions.extend(summary.versions.iter().cloned());
+    }
+
+    let mut versions_vec: Vec<String> = all_versions.into_iter().collect();
+    versions_vec.sort();
+
+    Ok((all_datasets, versions_vec))
 }

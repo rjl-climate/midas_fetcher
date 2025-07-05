@@ -47,7 +47,7 @@ pub mod http {
     pub const USER_AGENT: &str = "MIDAS-Fetcher/0.1.0 (Climate Research Tool)";
 
     /// Default HTTP request timeout
-    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
     /// Connection establishment timeout
     pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -62,7 +62,7 @@ pub mod http {
     pub const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
     /// Maximum connections per host in pool
-    pub const POOL_MAX_PER_HOST: usize = 10;
+    pub const POOL_MAX_PER_HOST: usize = 25;
 
     /// Maximum number of redirects to follow
     pub const MAX_REDIRECTS: usize = 10;
@@ -71,7 +71,7 @@ pub mod http {
 /// Rate limiting and retry configuration
 pub mod limits {
     /// Default rate limit for CEDA requests (requests per second)
-    pub const DEFAULT_RATE_LIMIT_RPS: u32 = 5;
+    pub const DEFAULT_RATE_LIMIT_RPS: u32 = 15;
 
     /// Web scraping rate limit (requests per second)
     pub const WEB_SCRAPING_RATE_LIMIT: u32 = 2;
@@ -135,6 +135,9 @@ pub mod selectors {
 
     /// CSS selector for CSV file links
     pub const CSV_FILE_SELECTOR: &str = "a[href$='.csv']";
+
+    /// CSS selector for manifest MD5 files
+    pub const MANIFEST_MD5_SELECTOR: &str = "a[href*='midas-open-v'][href$='-md5s.txt']";
 }
 
 /// File operation constants
@@ -160,7 +163,7 @@ pub mod workers {
     use super::Duration;
 
     /// Default number of download workers
-    pub const DEFAULT_WORKER_COUNT: usize = 4;
+    pub const DEFAULT_WORKER_COUNT: usize = 8;
 
     /// Maximum recommended concurrent workers
     pub const MAX_WORKER_COUNT: usize = 16;
@@ -187,7 +190,7 @@ pub mod workers {
     pub const WORK_TIMEOUT: Duration = Duration::from_secs(300);
 
     /// Maximum number of pending items in queue (memory limit)
-    pub const MAX_PENDING_ITEMS: usize = 100_000;
+    pub const MAX_PENDING_ITEMS: usize = 500_000;
 
     /// Default priority for work items
     pub const DEFAULT_PRIORITY: u32 = 100;

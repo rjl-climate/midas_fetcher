@@ -11,13 +11,13 @@
 //! - **Reservation system**: Prevents concurrent downloads of the same file
 //! - **Atomic operations**: Ensures file integrity with temp-file + rename pattern
 //! - **Fast verification**: Manifest-based hash verification for instant cache validation
-//! - **Structured storage**: Organizes files by dataset/year/quality/county/station
+//! - **Structured storage**: Organizes data files by dataset/quality/county/station, capability files by dataset/capability/county/station
 //!
 //! # Examples
 //!
 //! ```rust,no_run
 //! use midas_fetcher::app::cache::{CacheManager, CacheConfig, ReservationStatus};
-//! use midas_fetcher::app::models::{FileInfo, DatasetInfo, QualityControlVersion};
+//! use midas_fetcher::app::models::{FileInfo, DatasetFileInfo, QualityControlVersion};
 //! use midas_fetcher::app::hash::Md5Hash;
 //! use std::path::PathBuf;
 //!
@@ -27,7 +27,7 @@
 //!
 //! // Create a test file info
 //! let hash = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e")?;
-//! let dataset_info = DatasetInfo {
+//! let dataset_info = DatasetFileInfo {
 //!     dataset_name: "test-dataset".to_string(),
 //!     version: "202407".to_string(),
 //!     county: Some("devon".to_string()),
@@ -277,6 +277,11 @@ impl CacheManager {
         })
     }
 
+    /// Get the cache root directory
+    pub fn cache_root(&self) -> &Path {
+        &self.cache_root
+    }
+
     /// Get the default cache directory for the current OS
     fn get_default_cache_dir() -> CacheResult<PathBuf> {
         let cache_dir = dirs::cache_dir()
@@ -304,7 +309,9 @@ impl CacheManager {
 
     /// Get the cache path for a file based on its dataset information
     ///
-    /// Structure: {cache_root}/{dataset}/{year}/{quality_version}/{county}/{station}/{filename}
+    /// Structure:
+    /// - Capability/metadata files: {cache_root}/{dataset}/capability/{county}/{station}/{filename}
+    /// - Data files: {cache_root}/{dataset}/{quality_version}/{county}/{station}/{filename}
     pub fn get_file_path(&self, file_info: &FileInfo) -> PathBuf {
         let dataset = &file_info.dataset_info;
         let mut path = self.cache_root.clone();
@@ -312,18 +319,26 @@ impl CacheManager {
         // Add dataset name
         path.push(&dataset.dataset_name);
 
-        // Add year if available
-        if let Some(year) = &dataset.year {
-            path.push(year);
+        // Determine path structure based on file type
+        if let Some(ref file_type) = dataset.file_type {
+            if file_type == "capability" || file_type == "metadata" {
+                // Capability and metadata files go in separate capability folder
+                path.push("capability");
+            } else {
+                // Data files use quality version structure
+                if let Some(qv) = &dataset.quality_version {
+                    path.push(qv.to_filename_format());
+                } else {
+                    path.push("no-quality");
+                }
+            }
         } else {
-            path.push("no-year");
-        }
-
-        // Add quality version if available
-        if let Some(qv) = &dataset.quality_version {
-            path.push(qv.to_filename_format());
-        } else {
-            path.push("no-quality");
+            // Fallback for files without file_type - use quality version
+            if let Some(qv) = &dataset.quality_version {
+                path.push(qv.to_filename_format());
+            } else {
+                path.push("no-quality");
+            }
         }
 
         // Add county if available
@@ -666,12 +681,12 @@ pub struct CacheStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::models::{DatasetInfo, QualityControlVersion};
+    use crate::app::models::{DatasetFileInfo, QualityControlVersion};
     use tempfile::TempDir;
 
     fn create_test_file_info() -> FileInfo {
         let hash = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e").unwrap();
-        let dataset_info = DatasetInfo {
+        let dataset_info = DatasetFileInfo {
             dataset_name: "uk-daily-temperature-obs".to_string(),
             version: "202407".to_string(),
             county: Some("devon".to_string()),
@@ -709,11 +724,106 @@ mod tests {
         let expected_path = temp_dir
             .path()
             .join("uk-daily-temperature-obs")
-            .join("1980")
             .join("qcv-1")
             .join("devon")
             .join("01381_twist")
             .join("test.csv");
+
+        assert_eq!(path, expected_path);
+    }
+
+    #[tokio::test]
+    async fn test_cache_directory_structure_capability_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_root: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let cache = CacheManager::new(config).await.unwrap();
+
+        // Create a capability file (metadata file)
+        let hash = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e").unwrap();
+        let dataset_info = DatasetFileInfo {
+            dataset_name: "uk-daily-temperature-obs".to_string(),
+            version: "202407".to_string(),
+            county: Some("devon".to_string()),
+            station_id: Some("01381".to_string()),
+            station_name: Some("twist".to_string()),
+            quality_version: Some(QualityControlVersion::V1),
+            year: None, // Capability files don't have years
+            file_type: Some("capability".to_string()),
+        };
+
+        let file_info = FileInfo {
+            hash,
+            relative_path: "./data/capability.csv".to_string(),
+            file_name: "capability.csv".to_string(),
+            dataset_info,
+            retry_count: 0,
+            last_attempt: None,
+            estimated_size: None,
+            destination_path: PathBuf::from("/tmp/capability.csv"),
+        };
+
+        let path = cache.get_file_path(&file_info);
+
+        // Capability files should go in separate capability folder
+        let expected_path = temp_dir
+            .path()
+            .join("uk-daily-temperature-obs")
+            .join("capability")
+            .join("devon")
+            .join("01381_twist")
+            .join("capability.csv");
+
+        assert_eq!(path, expected_path);
+    }
+
+    #[tokio::test]
+    async fn test_cache_directory_structure_metadata_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_root: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let cache = CacheManager::new(config).await.unwrap();
+
+        // Create a metadata file
+        let hash = Md5Hash::from_hex("9734faa872681f96b144f60d29d52011").unwrap();
+        let dataset_info = DatasetFileInfo {
+            dataset_name: "uk-daily-temperature-obs".to_string(),
+            version: "202407".to_string(),
+            county: Some("devon".to_string()),
+            station_id: Some("01382".to_string()),
+            station_name: Some("exeter".to_string()),
+            quality_version: None, // Metadata files don't have quality versions
+            year: None,            // Metadata files don't have years
+            file_type: Some("metadata".to_string()),
+        };
+
+        let file_info = FileInfo {
+            hash,
+            relative_path: "./data/metadata.csv".to_string(),
+            file_name: "metadata.csv".to_string(),
+            dataset_info,
+            retry_count: 0,
+            last_attempt: None,
+            estimated_size: None,
+            destination_path: PathBuf::from("/tmp/metadata.csv"),
+        };
+
+        let path = cache.get_file_path(&file_info);
+
+        // Metadata files should also go in capability folder
+        let expected_path = temp_dir
+            .path()
+            .join("uk-daily-temperature-obs")
+            .join("capability")
+            .join("devon")
+            .join("01382_exeter")
+            .join("metadata.csv");
 
         assert_eq!(path, expected_path);
     }

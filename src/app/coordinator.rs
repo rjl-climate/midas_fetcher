@@ -40,7 +40,7 @@
 //!
 //! // Start download process with progress monitoring
 //! let result = coordinator.run_downloads().await?;
-//! println!("Downloaded {} files", result.files_completed);
+//! println!("Downloaded {} files", result.stats.files_completed);
 //! # Ok(())
 //! # }
 //! ```
@@ -59,6 +59,7 @@ use crate::app::cache::CacheManager;
 use crate::app::client::CedaClient;
 use crate::app::queue::WorkQueue;
 use crate::app::worker::{WorkerConfig, WorkerPool, WorkerProgress};
+use crate::cli::progress::ProgressDisplay;
 use crate::constants::workers;
 use crate::errors::DownloadResult;
 
@@ -89,7 +90,7 @@ impl Default for CoordinatorConfig {
             shutdown_timeout: Duration::from_secs(30),
             enable_progress_bar: true,
             verbose_logging: false,
-            progress_batch_size: 50,
+            progress_batch_size: 10000,
             worker_config: WorkerConfig::default(),
         }
     }
@@ -232,7 +233,12 @@ impl Coordinator {
 
         // Start progress monitoring
         let (progress_tx, progress_rx) = mpsc::channel(self.config.progress_batch_size);
+        info!(
+            "Starting progress monitoring with batch size {}",
+            self.config.progress_batch_size
+        );
         let progress_monitor = self.start_progress_monitoring(progress_rx, shutdown_tx.subscribe());
+        info!("Progress monitoring task spawned");
 
         // Start the worker pool
         info!("Starting worker pool...");
@@ -245,8 +251,62 @@ impl Coordinator {
                 total_duration: session_start.elapsed(),
             });
         }
+        info!("Worker pool started successfully");
 
         self.worker_pool = Some(worker_pool);
+
+        // Add a brief delay to let workers initialize and start working
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Check initial queue state
+        let initial_queue_stats = self.queue.stats().await;
+        info!(
+            "Initial queue state: pending={}, in_progress={}, completed={}",
+            initial_queue_stats.pending_count,
+            initial_queue_stats.in_progress_count,
+            initial_queue_stats.completed_count
+        );
+
+        // Start periodic progress logging task
+        let periodic_stats_queue = self.queue.clone();
+        let _periodic_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            let mut last_completed = 0u64;
+
+            loop {
+                interval.tick().await;
+                let stats = periodic_stats_queue.stats().await;
+
+                if stats.pending_count > 0 || stats.in_progress_count > 0 {
+                    let completed_since_last = stats.completed_count.saturating_sub(last_completed);
+                    if completed_since_last > 0 {
+                        info!(
+                            "Download progress: {} completed (+{}), {} pending, {} in progress, {} failed",
+                            stats.completed_count,
+                            completed_since_last,
+                            stats.pending_count,
+                            stats.in_progress_count,
+                            stats.failed_count
+                        );
+                    } else {
+                        info!(
+                            "Download progress: pending={}, in_progress={}, completed={}, failed={}",
+                            stats.pending_count,
+                            stats.in_progress_count,
+                            stats.completed_count,
+                            stats.failed_count
+                        );
+                    }
+                    last_completed = stats.completed_count;
+                } else {
+                    info!(
+                        "All downloads completed: {} successful, {} failed",
+                        stats.completed_count, stats.failed_count
+                    );
+                    break;
+                }
+            }
+        });
 
         // Wait for completion or shutdown signal
         let completion_result = tokio::select! {
@@ -258,12 +318,26 @@ impl Coordinator {
                 info!("All downloads completed naturally");
                 self.handle_completion().await
             }
+            _ = tokio::time::sleep(Duration::from_secs(300)) => {
+                warn!("Download process running longer than expected - checking status");
+                let debug_stats = self.queue.stats().await;
+
+                if debug_stats.pending_count == 0 && debug_stats.in_progress_count == 0 {
+                    info!("Downloads completed during timeout check");
+                    self.handle_completion().await
+                } else {
+                    error!("Download process appears hung - Queue diagnostics: pending={}, in_progress={}, completed={}, failed={}",
+                           debug_stats.pending_count, debug_stats.in_progress_count,
+                           debug_stats.completed_count, debug_stats.failed_count);
+
+                    warn!("Forcing emergency completion due to extended timeout");
+                    self.handle_emergency_completion().await
+                }
+            }
         };
 
         // Wait for progress monitor to finish
-        if let Err(e) = progress_monitor.await {
-            warn!("Progress monitor task failed: {}", e);
-        }
+        let _ = progress_monitor.await;
 
         // Shutdown worker pool
         let shutdown_errors = if let Some(pool) = self.worker_pool.take() {
@@ -307,6 +381,26 @@ impl Coordinator {
         })
     }
 
+    /// Run downloads with integrated progress display
+    ///
+    /// This simplified version just delegates to run_downloads.
+    /// The progress updates should be handled by commands.rs polling the coordinator.
+    ///
+    /// # Arguments
+    ///
+    /// * `_progress_display` - Unused for now, kept for interface compatibility
+    ///
+    /// # Errors
+    ///
+    /// Returns `DownloadError` if download coordination fails
+    pub async fn run_downloads_with_progress(
+        &mut self,
+        _progress_display: &mut ProgressDisplay,
+    ) -> DownloadResult<SessionResult> {
+        info!("Starting download coordination");
+        self.run_downloads().await
+    }
+
     /// Get current download statistics
     pub async fn get_stats(&self) -> DownloadStats {
         self.stats.read().await.clone()
@@ -347,6 +441,7 @@ impl Coordinator {
                 signal::ctrl_c()
                     .await
                     .expect("Failed to install Ctrl+C handler");
+                info!("Ctrl+C signal received");
             };
 
             #[cfg(unix)]
@@ -476,16 +571,41 @@ impl Coordinator {
 
     /// Wait for all downloads to complete naturally
     async fn wait_for_completion(&self) {
+        let mut iteration_count = 0;
         loop {
             let queue_stats = self.queue.stats().await;
+            iteration_count += 1;
+
+            // Log state every 10 seconds (100 iterations * 100ms)
+            if iteration_count % 100 == 0 {
+                info!(
+                    "Waiting for completion: pending={}, in_progress={}, completed={}, failed={} (iteration {})",
+                    queue_stats.pending_count,
+                    queue_stats.in_progress_count,
+                    queue_stats.completed_count,
+                    queue_stats.failed_count,
+                    iteration_count
+                );
+            }
 
             // Check if all work is done
             if queue_stats.pending_count == 0 && queue_stats.in_progress_count == 0 {
-                debug!(
+                info!(
                     "All downloads completed: {} successful, {} failed",
                     queue_stats.completed_count, queue_stats.failed_count
                 );
                 break;
+            }
+
+            // Log more detailed info on the first few iterations to help debug hanging
+            if iteration_count <= 10 {
+                debug!(
+                    "Wait iteration {}: pending={}, in_progress={}, completed={}",
+                    iteration_count,
+                    queue_stats.pending_count,
+                    queue_stats.in_progress_count,
+                    queue_stats.completed_count
+                );
             }
 
             // Brief sleep to avoid busy waiting
@@ -536,13 +656,47 @@ impl Coordinator {
 
         Ok(())
     }
+
+    /// Handle emergency completion when system appears hung
+    async fn handle_emergency_completion(&mut self) -> DownloadResult<()> {
+        error!("Handling emergency completion due to system hang");
+
+        // Force shutdown signal
+        if let Some(tx) = &self.shutdown_tx {
+            let _ = tx.send(());
+        }
+
+        // Update statistics with current state
+        let queue_stats = self.queue.stats().await;
+        {
+            let mut stats = self.stats.write().await;
+            stats.files_completed = queue_stats.completed_count as usize;
+            stats.files_failed = queue_stats.failed_count as usize
+                + queue_stats.pending_count as usize
+                + queue_stats.in_progress_count as usize;
+            stats.files_in_progress = 0;
+            stats.active_workers = 0;
+            stats.session_duration = stats
+                .session_start
+                .signed_duration_since(Utc::now())
+                .to_std()
+                .unwrap_or(Duration::ZERO);
+        }
+
+        warn!(
+            "Emergency completion: marked {} files as failed due to system hang",
+            queue_stats.pending_count + queue_stats.in_progress_count
+        );
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::hash::Md5Hash;
-    use crate::app::models::{DatasetInfo, FileInfo};
+    use crate::app::models::{DatasetFileInfo, FileInfo};
     use crate::app::{CacheConfig, CacheManager, CedaClient, WorkQueue};
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -621,7 +775,7 @@ mod tests {
             hash,
             relative_path: "./test.txt".to_string(),
             file_name: "test.txt".to_string(),
-            dataset_info: DatasetInfo {
+            dataset_info: DatasetFileInfo {
                 dataset_name: "test".to_string(),
                 version: "v1".to_string(),
                 county: None,

@@ -20,7 +20,7 @@ mod tests {
     #[test]
     fn test_constants_accessible() {
         // Test that our constants are accessible
-        assert_eq!(DEFAULT_WORKER_COUNT, 4);
+        assert_eq!(DEFAULT_WORKER_COUNT, 8);
         assert_eq!(ENV_USERNAME, "CEDA_USERNAME");
         assert!(USER_AGENT.contains("MIDAS-Fetcher"));
     }

@@ -53,7 +53,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::app::cache::{CacheManager, ReservationStatus};
 use crate::app::client::CedaClient;
@@ -224,6 +224,9 @@ impl DownloadWorker {
         // Report initial status
         self.report_progress(WorkerStatus::Idle, None).await;
 
+        // Log that worker is ready to work
+        debug!("Worker {} ready for work", self.id);
+
         loop {
             // Check for shutdown signal
             if self.check_shutdown().await {
@@ -241,7 +244,7 @@ impl DownloadWorker {
                     }
                 }
                 Err(e) => {
-                    error!("Worker {} encountered error: {}", self.id, e);
+                    debug!("Worker {} encountered error: {}", self.id, e);
                     self.report_progress(
                         WorkerStatus::Error { retry_count: 0 },
                         Some(format!("Worker error: {}", e)),
@@ -332,7 +335,7 @@ impl DownloadWorker {
                 );
             }
             Err(e) => {
-                error!(
+                debug!(
                     "Worker {} failed to download: {} - {}",
                     self.id, file_info.file_name, e
                 );
@@ -367,7 +370,7 @@ impl DownloadWorker {
                             return Ok(());
                         }
                         Err(e) => {
-                            error!("Worker {} failed to save file: {}", self.id, e);
+                            debug!("Worker {} failed to save file: {}", self.id, e);
                             retry_count += 1;
 
                             if retry_count >= self.config.max_retries {
@@ -385,7 +388,7 @@ impl DownloadWorker {
                     }
                 }
                 Err(e) => {
-                    error!("Worker {} download failed: {}", self.id, e);
+                    debug!("Worker {} download failed: {}", self.id, e);
                     retry_count += 1;
 
                     if retry_count >= self.config.max_retries {
@@ -611,11 +614,11 @@ impl WorkerPool {
                     // Worker completed successfully
                 }
                 Ok(Err(e)) => {
-                    error!("Worker failed: {}", e);
+                    debug!("Worker failed: {}", e);
                     error_count += 1;
                 }
                 Err(e) => {
-                    error!("Worker panicked: {}", e);
+                    debug!("Worker panicked: {}", e);
                     error_count += 1;
                 }
             }

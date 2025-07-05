@@ -292,6 +292,9 @@ CREATE src/cli/progress.rs:
 
 ### Task 9: CLI Interface
 ```yaml
+CREATE app initialisation:
+  - DETECT missing auth credentials on startup and prompt
+
 CREATE src/cli/args.rs:
   - DEFINE command structure using clap derive
   - INCLUDE download, auth, cache, optimize subcommands
@@ -302,6 +305,7 @@ CREATE src/main.rs:
   - HANDLE argument parsing and command dispatch
   - INTEGRATE with coordinator for actual work
   - PROVIDE proper error reporting to stderr
+
 ```
 
 ### Task 10: Library Integration and cleanup

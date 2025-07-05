@@ -392,6 +392,81 @@ impl WorkQueue {
         Ok(true)
     }
 
+    /// Add multiple files to the work queue efficiently (bulk operation)
+    pub async fn add_work_bulk(&self, file_infos: Vec<FileInfo>) -> DownloadResult<usize> {
+        let total_files = file_infos.len();
+        let mut state = self.state.lock().await;
+        let mut added_count = 0;
+        let mut skipped_duplicates = 0;
+        let mut hit_capacity_limit = false;
+
+        info!("Starting bulk add of {} files to queue", total_files);
+        info!(
+            "Current queue state: pending={}, total_items={}",
+            state.pending.len(),
+            state.work_items.len()
+        );
+
+        for file_info in file_infos {
+            let work_id = file_info.hash;
+
+            // Skip if already completed or exists
+            if state.completed.contains(&work_id) || state.work_items.contains_key(&work_id) {
+                state.stats.duplicate_count += 1;
+                skipped_duplicates += 1;
+                continue;
+            }
+
+            // Check memory limits (only count pending items, not completed/failed ones)
+            let current_pending_count = state.pending.len();
+            if current_pending_count + added_count >= self.config.max_pending_items {
+                hit_capacity_limit = true;
+                let total_work_items = state.work_items.len();
+                warn!(
+                    "Queue capacity limit reached: {} pending + {} new = {} items (limit: {}, total work items: {})",
+                    current_pending_count,
+                    added_count,
+                    current_pending_count + added_count,
+                    self.config.max_pending_items,
+                    total_work_items
+                );
+                break;
+            }
+
+            // Create and add work info
+            let work_info = WorkInfo::with_priority(file_info, workers::DEFAULT_PRIORITY);
+            state.work_items.insert(work_id, work_info);
+            state.push_pending(work_id);
+            added_count += 1;
+        }
+
+        // Update stats once at the end
+        state.stats.total_added += added_count as u64;
+        state.update_stats();
+
+        // Clone stats before dropping the lock
+        let stats = state.stats.clone();
+        drop(state);
+
+        // Update stats cache once outside the lock
+        self.update_stats_cache(&stats).await;
+
+        info!(
+            "Bulk add completed: {}/{} files added, {} duplicates skipped",
+            added_count, total_files, skipped_duplicates
+        );
+
+        if hit_capacity_limit {
+            let remaining = total_files - added_count - skipped_duplicates;
+            warn!(
+                "Queue capacity limit reached - {} files not added due to capacity constraints",
+                remaining
+            );
+        }
+
+        Ok(added_count)
+    }
+
     /// Get next available work item for a worker
     ///
     /// This is the core work-stealing operation that prevents worker starvation.

@@ -2,6 +2,7 @@
 name = "midas_fetcher"
 version = "0.1.0"
 edition = "2024"
+default-run = "midas_fetcher"
 
 [dependencies]
 # Core async runtime and networking
@@ -24,7 +25,7 @@ indicatif = "0.17"
 thiserror = "1.0"
 anyhow = "1.0"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Serialization and credentials
 serde = { version = "1.0", features = ["derive"] }
