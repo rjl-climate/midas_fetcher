@@ -33,6 +33,12 @@ toml = "0.8"
 rpassword = "7.0"
 dotenv = "0.15"
 
+# Async streaming
+futures = "0.3"
+
+# Hashing for file verification
+md5 = "0.7"
+
 [dev-dependencies]
 # Testing
 tempfile = "3.8"
