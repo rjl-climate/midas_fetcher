@@ -8,6 +8,7 @@ use std::process;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
 
+// Import CLI modules through the library (module is public but not re-exported)
 use midas_fetcher::cli::{
     Cli, Commands, handle_auth, handle_cache, handle_download, handle_manifest,
 };

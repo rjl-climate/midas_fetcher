@@ -3,6 +3,13 @@ name = "midas_fetcher"
 version = "0.1.0"
 edition = "2024"
 default-run = "midas_fetcher"
+description = "A Rust library for downloading weather data from the UK Met Office MIDAS Open dataset"
+authors = ["MIDAS Fetcher Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/midas-fetcher"
+readme = "README.md"
+keywords = ["weather", "climate", "data", "download", "midas"]
+categories = ["science", "command-line-utilities"]
 
 [dependencies]
 # Core async runtime and networking

@@ -59,7 +59,6 @@ use crate::app::cache::CacheManager;
 use crate::app::client::CedaClient;
 use crate::app::queue::WorkQueue;
 use crate::app::worker::{WorkerConfig, WorkerPool, WorkerProgress};
-use crate::cli::progress::ProgressDisplay;
 use crate::constants::workers;
 use crate::errors::DownloadResult;
 
@@ -379,26 +378,6 @@ impl Coordinator {
             shutdown_errors,
             total_duration: session_start.elapsed(),
         })
-    }
-
-    /// Run downloads with integrated progress display
-    ///
-    /// This simplified version just delegates to run_downloads.
-    /// The progress updates should be handled by commands.rs polling the coordinator.
-    ///
-    /// # Arguments
-    ///
-    /// * `_progress_display` - Unused for now, kept for interface compatibility
-    ///
-    /// # Errors
-    ///
-    /// Returns `DownloadError` if download coordination fails
-    pub async fn run_downloads_with_progress(
-        &mut self,
-        _progress_display: &mut ProgressDisplay,
-    ) -> DownloadResult<SessionResult> {
-        info!("Starting download coordination");
-        self.run_downloads().await
     }
 
     /// Get current download statistics
