@@ -54,6 +54,7 @@
 
 pub mod cache;
 pub mod client;
+pub mod coordinator;
 pub mod hash;
 pub mod manifest;
 pub mod models;
@@ -66,6 +67,7 @@ pub use cache::{
     VerificationFailure, VerificationReport,
 };
 pub use client::{CedaClient, ClientConfig};
+pub use coordinator::{Coordinator, CoordinatorConfig, DownloadStats, SessionResult};
 pub use hash::Md5Hash;
 pub use manifest::{
     ManifestConfig, ManifestStats, ManifestStreamer, collect_all_files, validate_manifest,
