@@ -35,6 +35,7 @@
 pub mod client;
 pub mod manifest;
 pub mod models;
+pub mod queue;
 
 // Re-export main public API
 pub use client::{CedaClient, ClientConfig};
@@ -44,6 +45,7 @@ pub use manifest::{
 pub use models::{
     DatasetInfo, FileInfo, QualityControlVersion, generate_file_id, parse_manifest_line,
 };
+pub use queue::{QueueStats, WorkInfo, WorkQueue, WorkQueueConfig, WorkStatus};
 
 #[cfg(test)]
 mod tests {

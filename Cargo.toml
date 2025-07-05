@@ -39,6 +39,19 @@ futures = "0.3"
 # Hashing for file verification
 md5 = "0.7"
 
+# Terminal UI for simulation
+crossterm = "0.27"
+ratatui = "0.25"
+
+# Random data generation for simulation
+rand = "0.8"
+
+# Enhanced time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# File system utilities
+tempfile = "3.8"
+
 [dev-dependencies]
 # Testing
 tempfile = "3.8"

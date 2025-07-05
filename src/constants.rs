@@ -157,6 +157,8 @@ pub mod files {
 
 /// Worker and concurrency configuration
 pub mod workers {
+    use super::Duration;
+
     /// Default number of download workers
     pub const DEFAULT_WORKER_COUNT: usize = 4;
 
@@ -174,6 +176,27 @@ pub mod workers {
 
     /// Prefetch count for cache operations
     pub const PREFETCH_COUNT: usize = 50;
+
+    /// Maximum retry attempts for failed work items
+    pub const MAX_RETRIES: u32 = 3;
+
+    /// Delay between retry attempts
+    pub const RETRY_DELAY: Duration = Duration::from_secs(30);
+
+    /// Timeout for work items (if worker doesn't report progress)
+    pub const WORK_TIMEOUT: Duration = Duration::from_secs(300);
+
+    /// Maximum number of pending items in queue (memory limit)
+    pub const MAX_PENDING_ITEMS: usize = 100_000;
+
+    /// Default priority for work items
+    pub const DEFAULT_PRIORITY: u32 = 100;
+
+    /// High priority for important work items
+    pub const HIGH_PRIORITY: u32 = 200;
+
+    /// Low priority for background work items
+    pub const LOW_PRIORITY: u32 = 50;
 }
 
 /// Progress reporting and monitoring
