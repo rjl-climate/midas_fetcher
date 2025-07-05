@@ -181,8 +181,7 @@ pub fn save_credentials(username: &str, password: &str) -> AuthResult<()> {
     Ok(())
 }
 
-/// Verify credentials by attempting authentication
-/// Note: This is a placeholder - will be implemented in Task 3 with HTTP client
+/// Verify credentials by attempting authentication with CEDA
 pub async fn verify_credentials() -> AuthResult<bool> {
     if !check_credentials() {
         return Err(AuthError::MissingCredentials);
@@ -190,10 +189,17 @@ pub async fn verify_credentials() -> AuthResult<bool> {
 
     println!("Verifying credentials with CEDA...");
 
-    // TODO: Implement actual verification with CedaClient in Task 3
-    // For now, we just check that credentials exist
-    println!("Credential verification will be implemented in Task 3 (HTTP Client)");
-    Ok(true)
+    // Use CedaClient to test authentication
+    match crate::app::CedaClient::new().await {
+        Ok(_) => {
+            println!("Credentials verified successfully!");
+            Ok(true)
+        }
+        Err(e) => {
+            println!("Credential verification failed: {}", e);
+            Ok(false)
+        }
+    }
 }
 
 /// Interactive credential setup workflow
