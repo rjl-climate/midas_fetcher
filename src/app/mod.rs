@@ -6,46 +6,48 @@
 //! # Examples
 //!
 //! ```rust,no_run
-//! use midas_fetcher::app::{CacheManager, CacheConfig, CedaClient, ManifestStreamer, ReservationStatus};
+//! use midas_fetcher::app::{
+//!     CacheManager, CacheConfig, CedaClient, ManifestStreamer, WorkQueue,
+//!     WorkerPool, WorkerConfig
+//! };
 //! use futures::StreamExt;
+//! use std::sync::Arc;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create cache manager
-//! let cache = CacheManager::new(CacheConfig::default()).await?;
+//! // Create shared components
+//! let cache = Arc::new(CacheManager::new(CacheConfig::default()).await?);
+//! let client = Arc::new(CedaClient::new().await?);
+//! let queue = Arc::new(WorkQueue::new());
 //!
-//! // Create authenticated CEDA client
-//! let client = CedaClient::new().await?;
-//!
-//! // Stream files from a manifest
+//! // Load work into queue from manifest
 //! let mut streamer = ManifestStreamer::new();
 //! let mut stream = streamer.stream("manifest.txt").await?;
-//!
 //! while let Some(result) = stream.next().await {
 //!     match result {
 //!         Ok(file_info) => {
-//!             println!("Found file: {}", file_info.file_name);
-//!             
-//!             // Check cache and reserve if needed
-//!             match cache.check_and_reserve(&file_info).await? {
-//!                 ReservationStatus::AlreadyExists => {
-//!                     println!("File already cached");
-//!                 }
-//!                 ReservationStatus::Reserved => {
-//!                     // Download and save file (simplified for doctest)
-//!                     let url = file_info.download_url("https://data.ceda.ac.uk");
-//!                     println!("Would download from: {}", url);
-//!                     // In real code: let content = client.download_file(&url, &destination, false).await?;
-//!                     let content = b"simulated file content";
-//!                     cache.save_file_atomic(content, &file_info).await?;
-//!                 }
-//!                 ReservationStatus::ReservedByOther { worker_id } => {
-//!                     println!("Worker {} is downloading this file", worker_id);
-//!                 }
-//!             }
+//!             queue.add_work(file_info).await?;
 //!         }
 //!         Err(e) => eprintln!("Error: {}", e),
 //!     }
 //! }
+//!
+//! // Create and start worker pool
+//! let config = WorkerConfig::default();
+//! let mut pool = WorkerPool::new(config, queue, cache, client);
+//!
+//! let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(100);
+//! pool.start(progress_tx).await?;
+//!
+//! // Monitor progress
+//! tokio::spawn(async move {
+//!     while let Some(progress) = progress_rx.recv().await {
+//!         println!("Worker {}: {} files completed",
+//!                  progress.worker_id, progress.files_completed);
+//!     }
+//! });
+//!
+//! // Shutdown when work is complete (simplified)
+//! pool.shutdown().await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -56,6 +58,7 @@ pub mod hash;
 pub mod manifest;
 pub mod models;
 pub mod queue;
+pub mod worker;
 
 // Re-export main public API
 pub use cache::{
@@ -71,6 +74,9 @@ pub use models::{
     DatasetInfo, FileInfo, QualityControlVersion, generate_file_id, parse_manifest_line,
 };
 pub use queue::{QueueStats, WorkInfo, WorkQueue, WorkQueueConfig, WorkStatus};
+pub use worker::{
+    DownloadWorker, WorkerConfig, WorkerPool, WorkerPoolStats, WorkerProgress, WorkerStatus,
+};
 
 #[cfg(test)]
 mod tests {

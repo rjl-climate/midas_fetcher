@@ -281,7 +281,7 @@ WORKER algorithm:
 CREATE src/app/coordinator.rs:
   - SPAWN worker pool with configurable concurrency
   - COLLECT progress reports from workers
-  - HANDLE shutdown and cleanup
+  - HANDLE shutdown and cleanup (recognising CTRL-C)
   - PROVIDE status reporting for CLI
 
 CREATE src/cli/progress.rs:

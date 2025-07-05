@@ -236,6 +236,7 @@ impl VerificationReport {
 }
 
 /// Main cache management system
+#[derive(Debug)]
 pub struct CacheManager {
     /// Configuration
     config: CacheConfig,

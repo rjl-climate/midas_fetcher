@@ -70,6 +70,10 @@ pub enum DownloadError {
     #[error("Download timed out after {seconds} seconds")]
     Timeout { seconds: u64 },
 
+    /// Invalid URL provided
+    #[error("Invalid URL: {url} - {error}")]
+    InvalidUrl { url: String, error: String },
+
     /// Server returned error status
     #[error("Server error: HTTP {status}")]
     ServerError { status: u16 },
@@ -438,3 +442,22 @@ pub type CacheResult<T> = std::result::Result<T, CacheError>;
 
 /// Queue result type alias
 pub type QueueResult<T> = std::result::Result<T, QueueError>;
+
+// Additional error conversions for worker module
+impl From<CacheError> for DownloadError {
+    fn from(cache_error: CacheError) -> Self {
+        match cache_error {
+            CacheError::DirectoryNotAccessible { path } => DownloadError::TempFileError { path },
+            CacheError::VerificationFailed { .. } => DownloadError::HashMismatch {
+                expected: "unknown".to_string(),
+                actual: "unknown".to_string(),
+            },
+            CacheError::InvalidState { reason } => DownloadError::TempFileError {
+                path: PathBuf::from(reason),
+            },
+            _ => DownloadError::TempFileError {
+                path: PathBuf::from("cache_error"),
+            },
+        }
+    }
+}

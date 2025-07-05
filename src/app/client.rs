@@ -551,6 +551,37 @@ impl CedaClient {
         Ok(())
     }
 
+    /// Download file content as bytes without saving to disk
+    ///
+    /// This method downloads the file content directly into memory,
+    /// suitable for cache operations where the content needs to be
+    /// processed before saving.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The URL to download content from
+    ///
+    /// # Errors
+    ///
+    /// Returns `DownloadError` if the HTTP request fails or content cannot be read
+    pub async fn download_file_content(&self, url: &str) -> DownloadResult<Vec<u8>> {
+        let parsed_url = Url::parse(url).map_err(|e| DownloadError::InvalidUrl {
+            url: url.to_string(),
+            error: e.to_string(),
+        })?;
+
+        let response = self.get_response(&parsed_url).await?;
+
+        if !response.status().is_success() {
+            return Err(DownloadError::ServerError {
+                status: response.status().as_u16(),
+            });
+        }
+
+        let bytes = response.bytes().await.map_err(DownloadError::Http)?;
+        Ok(bytes.to_vec())
+    }
+
     /// Get the base URL for the CEDA archive
     pub fn base_url(&self) -> &Url {
         &self.base_url

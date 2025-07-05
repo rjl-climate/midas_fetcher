@@ -284,6 +284,7 @@ impl QueueState {
 ///
 /// This queue prevents worker starvation by ensuring workers never wait for
 /// specific files and always seek new work when available.
+#[derive(Debug)]
 pub struct WorkQueue {
     /// Configuration for queue behavior
     config: WorkQueueConfig,
