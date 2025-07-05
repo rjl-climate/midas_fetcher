@@ -13,7 +13,8 @@ use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
 use tracing::{debug, error, info, warn};
 
-use crate::app::models::FileInfo;
+use crate::app::hash::Md5Hash;
+use crate::app::models::{FileInfo, parse_manifest_line};
 use crate::constants::workers;
 use crate::errors::{ManifestError, ManifestResult};
 
@@ -77,7 +78,7 @@ pub struct ManifestStreamer {
     /// Configuration for parsing
     config: ManifestConfig,
     /// Set of seen hashes for duplicate detection
-    seen_hashes: HashSet<String>,
+    seen_hashes: HashSet<Md5Hash>,
     /// Current processing statistics
     stats: ManifestStats,
     /// Current line number for error reporting
@@ -169,7 +170,7 @@ impl ManifestStreamer {
         }
 
         // Parse the line
-        let (hash, path) = match crate::app::models::parse_manifest_line(&line) {
+        let (hash, path) = match parse_manifest_line(&line) {
             Ok((hash, path)) => (hash, path),
             Err(mut e) => {
                 // Update line number in error for better diagnostics
@@ -205,7 +206,7 @@ impl ManifestStreamer {
                 self.seen_hashes.clear();
             }
 
-            self.seen_hashes.insert(hash.clone());
+            self.seen_hashes.insert(hash);
         }
 
         // Create FileInfo
@@ -442,8 +443,8 @@ mod tests {
         }; // stream is dropped here, ending the mutable borrow
 
         assert_eq!(files.len(), 2);
-        assert_eq!(files[0].hash, "50c9d1c465f3cbff652be1509c2e2a4e");
-        assert_eq!(files[1].hash, "9734faa872681f96b144f60d29d52011");
+        assert_eq!(files[0].hash.to_hex(), "50c9d1c465f3cbff652be1509c2e2a4e");
+        assert_eq!(files[1].hash.to_hex(), "9734faa872681f96b144f60d29d52011");
 
         let stats = streamer.stats();
         assert_eq!(stats.valid_entries, 2);
@@ -558,8 +559,8 @@ invalid_hash  ./data/uk-daily-temperature-obs/dataset-version-202407/devon/01382
 
         // Should only get valid files (errors logged but not returned)
         assert_eq!(files.len(), 2);
-        assert_eq!(files[0].hash, "50c9d1c465f3cbff652be1509c2e2a4e");
-        assert_eq!(files[1].hash, "9734faa872681f96b144f60d29d52011");
+        assert_eq!(files[0].hash.to_hex(), "50c9d1c465f3cbff652be1509c2e2a4e");
+        assert_eq!(files[1].hash.to_hex(), "9734faa872681f96b144f60d29d52011");
     }
 
     /// Test manifest validation without collecting files.
@@ -646,7 +647,10 @@ ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-temperature-obs/dataset-versio
 
         // Check first file (capability file)
         let capability_file = &files[0];
-        assert_eq!(capability_file.hash, "50c9d1c465f3cbff652be1509c2e2a4e");
+        assert_eq!(
+            capability_file.hash.to_hex(),
+            "50c9d1c465f3cbff652be1509c2e2a4e"
+        );
         assert_eq!(
             capability_file.dataset_info.dataset_name,
             "uk-daily-temperature-obs"
@@ -671,7 +675,7 @@ ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-temperature-obs/dataset-versio
 
         // Check second file (data file)
         let data_file = &files[1];
-        assert_eq!(data_file.hash, "9734faa872681f96b144f60d29d52011");
+        assert_eq!(data_file.hash.to_hex(), "9734faa872681f96b144f60d29d52011");
         assert_eq!(data_file.dataset_info.year, Some("1992".to_string()));
         assert_eq!(
             data_file.dataset_info.quality_version,
@@ -703,7 +707,7 @@ ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-temperature-obs/dataset-versio
         let file_info = &files[0];
 
         // Test basic fields from manifest line
-        assert_eq!(file_info.hash, "50c9d1c465f3cbff652be1509c2e2a4e");
+        assert_eq!(file_info.hash.to_hex(), "50c9d1c465f3cbff652be1509c2e2a4e");
         assert_eq!(
             file_info.relative_path,
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/midas-open_uk-daily-temperature-obs_dv-202407_devon_01381_twist_capability.csv"

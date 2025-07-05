@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
+use crate::app::hash::Md5Hash;
 use crate::app::models::FileInfo;
 use crate::constants::workers;
 use crate::errors::{DownloadError, DownloadResult};
@@ -64,7 +65,9 @@ impl WorkStatus {
         match self {
             WorkStatus::Failed { failure_count, .. } => *failure_count,
             WorkStatus::Abandoned { failure_count, .. } => *failure_count,
-            WorkStatus::InProgress { previous_failures, .. } => *previous_failures,
+            WorkStatus::InProgress {
+                previous_failures, ..
+            } => *previous_failures,
             _ => 0,
         }
     }
@@ -105,7 +108,7 @@ impl WorkInfo {
     }
 
     /// Get the unique identifier for this work (file hash)
-    pub fn work_id(&self) -> &str {
+    pub fn work_id(&self) -> &Md5Hash {
         &self.file_info.hash
     }
 
@@ -210,11 +213,11 @@ impl QueueStats {
 #[derive(Debug)]
 struct QueueState {
     /// Pending work items ordered by priority
-    pending: VecDeque<String>, // work_id queue
+    pending: VecDeque<Md5Hash>, // work_id queue
     /// All work items indexed by work_id (file hash)
-    work_items: HashMap<String, WorkInfo>,
+    work_items: HashMap<Md5Hash, WorkInfo>,
     /// Completed work IDs for fast duplicate checking
-    completed: HashSet<String>,
+    completed: HashSet<Md5Hash>,
     /// Current statistics
     stats: QueueStats,
     /// Next worker ID for assignment
@@ -236,22 +239,22 @@ impl QueueState {
     }
 
     /// Get next available work ID from pending queue
-    fn pop_pending(&mut self) -> Option<String> {
+    fn pop_pending(&mut self) -> Option<Md5Hash> {
         self.pending.pop_front()
     }
 
     /// Add work ID to pending queue
-    fn push_pending(&mut self, work_id: String) {
+    fn push_pending(&mut self, work_id: Md5Hash) {
         self.pending.push_back(work_id);
     }
 
     /// Get work item by ID
-    fn get_work(&self, work_id: &str) -> Option<&WorkInfo> {
+    fn get_work(&self, work_id: &Md5Hash) -> Option<&WorkInfo> {
         self.work_items.get(work_id)
     }
 
     /// Get mutable work item by ID
-    fn get_work_mut(&mut self, work_id: &str) -> Option<&mut WorkInfo> {
+    fn get_work_mut(&mut self, work_id: &Md5Hash) -> Option<&mut WorkInfo> {
         self.work_items.get_mut(work_id)
     }
 
@@ -341,7 +344,7 @@ impl WorkQueue {
         priority: u32,
     ) -> DownloadResult<bool> {
         let mut state = self.state.lock().await;
-        let work_id = file_info.hash.clone();
+        let work_id = file_info.hash;
 
         // Check if this work is already completed
         if state.completed.contains(&work_id) {
@@ -375,11 +378,11 @@ impl WorkQueue {
         let work_info = WorkInfo::with_priority(file_info, priority);
 
         // Add to pending queue and work items
-        state.work_items.insert(work_id.clone(), work_info);
-        state.push_pending(work_id.clone());
+        state.work_items.insert(work_id, work_info);
+        state.push_pending(work_id);
         state.stats.total_added += 1;
 
-        info!("Added work to queue: {} (priority: {})", work_id, priority);
+        debug!("Added work to queue: {} (priority: {})", work_id, priority);
 
         // Update statistics
         state.update_stats();
@@ -447,14 +450,14 @@ impl WorkQueue {
         }
 
         // No pending work found, try failed work ready for retry
-        let retry_candidates: Vec<String> = state
+        let retry_candidates: Vec<Md5Hash> = state
             .work_items
             .iter()
             .filter_map(|(work_id, work_info)| {
                 if matches!(work_info.status, WorkStatus::Failed { .. })
                     && work_info.status.is_ready_for_retry(self.config.retry_delay)
                 {
-                    Some(work_id.clone())
+                    Some(*work_id)
                 } else {
                     None
                 }
@@ -466,7 +469,11 @@ impl WorkQueue {
             let (work_info, worker_id, previous_failure_count) = {
                 if let Some(work_info) = state.get_work(work_id) {
                     let previous_failure_count = work_info.status.failure_count();
-                    (Some(work_info.clone()), state.next_worker_id, previous_failure_count)
+                    (
+                        Some(work_info.clone()),
+                        state.next_worker_id,
+                        previous_failure_count,
+                    )
                 } else {
                     (None, 0, 0)
                 }
@@ -510,7 +517,7 @@ impl WorkQueue {
     /// # Arguments
     ///
     /// * `work_id` - ID of the completed work (file hash)
-    pub async fn mark_completed(&self, work_id: &str) -> DownloadResult<()> {
+    pub async fn mark_completed(&self, work_id: &Md5Hash) -> DownloadResult<()> {
         let stats = {
             let mut state = self.state.lock().await;
 
@@ -520,7 +527,7 @@ impl WorkQueue {
                 };
 
                 // Move to completed set for fast duplicate checking
-                state.completed.insert(work_id.to_string());
+                state.completed.insert(*work_id);
 
                 info!("Marked work completed: {}", work_id);
 
@@ -544,7 +551,7 @@ impl WorkQueue {
     ///
     /// * `work_id` - ID of the failed work (file hash)
     /// * `error` - Error that caused the failure
-    pub async fn mark_failed(&self, work_id: &str, error: &str) -> DownloadResult<()> {
+    pub async fn mark_failed(&self, work_id: &Md5Hash, error: &str) -> DownloadResult<()> {
         let stats = {
             let mut state = self.state.lock().await;
 
@@ -626,7 +633,7 @@ impl WorkQueue {
     }
 
     /// Get work item by ID (for debugging/monitoring)
-    pub async fn get_work_info(&self, work_id: &str) -> Option<WorkInfo> {
+    pub async fn get_work_info(&self, work_id: &Md5Hash) -> Option<WorkInfo> {
         let state = self.state.lock().await;
         state.get_work(work_id).cloned()
     }
@@ -704,7 +711,7 @@ impl WorkQueue {
             let mut timed_out = 0;
 
             // Find work items that have timed out
-            let timeout_candidates: Vec<String> = state
+            let timeout_candidates: Vec<Md5Hash> = state
                 .work_items
                 .iter()
                 .filter_map(|(work_id, work_info)| {
@@ -715,7 +722,7 @@ impl WorkQueue {
                             .unwrap_or(Duration::ZERO);
 
                         if elapsed > self.config.work_timeout {
-                            Some(work_id.clone())
+                            Some(*work_id)
                         } else {
                             None
                         }
@@ -744,7 +751,7 @@ impl WorkQueue {
                         };
 
                         // Add back to pending queue for retry
-                        state.push_pending(work_id.clone());
+                        state.push_pending(work_id);
                     }
 
                     timed_out += 1;
@@ -819,7 +826,8 @@ mod tests {
             )
         };
 
-        FileInfo::new(valid_hash, valid_path, temp_dir.path()).unwrap()
+        let hash_obj = Md5Hash::from_hex(&valid_hash).unwrap();
+        FileInfo::new(hash_obj, valid_path, temp_dir.path()).unwrap()
     }
 
     /// Test basic queue operations: add, get, complete
@@ -829,7 +837,7 @@ mod tests {
 
         // Add work
         let file_info = create_test_file_info("hash1", "./data/test1.csv");
-        let file_hash = file_info.hash.clone();
+        let file_hash = file_info.hash;
         let added = queue.add_work(file_info.clone()).await.unwrap();
         assert!(added);
 
@@ -882,7 +890,7 @@ mod tests {
 
         // Add and get work
         let file_info = create_test_file_info("hash1", "./data/test1.csv");
-        let file_hash = file_info.hash.clone();
+        let file_hash = file_info.hash;
         queue.add_work(file_info).await.unwrap();
 
         let work = queue.get_next_work().await.unwrap();
@@ -919,7 +927,7 @@ mod tests {
 
         // Add work
         let file_info = create_test_file_info("hash1", "./data/test1.csv");
-        let file_hash = file_info.hash.clone();
+        let file_hash = file_info.hash;
         queue.add_work(file_info).await.unwrap();
 
         // Fail it multiple times (need to respect retry delay)
@@ -929,7 +937,7 @@ mod tests {
                     .mark_failed(work.work_id(), &format!("Error {}", i + 1))
                     .await
                     .unwrap();
-                
+
                 // Wait for retry delay so work becomes available again
                 sleep(Duration::from_millis(2)).await;
             } else {
@@ -1021,7 +1029,7 @@ mod tests {
 
         // Add and claim work
         let file_info = create_test_file_info("hash1", "./data/test1.csv");
-        let file_hash = file_info.hash.clone();
+        let file_hash = file_info.hash;
         queue.add_work(file_info).await.unwrap();
 
         let work = queue.get_next_work().await.unwrap();

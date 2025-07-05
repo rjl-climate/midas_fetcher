@@ -32,6 +32,7 @@ use tokio::time::{interval, sleep};
 use tracing::{debug, info, warn};
 
 use midas_fetcher::app::{
+    hash::Md5Hash,
     models::FileInfo,
     queue::{WorkQueue, WorkQueueConfig},
 };
@@ -61,12 +62,12 @@ impl Default for SimulationConfig {
     fn default() -> Self {
         Self {
             worker_count: 8,
-            file_count: 1000,
-            duplicate_rate: 0.15, // 15% duplicates
-            failure_rate: 0.05,   // 5% failures
-            min_download_time: 50,
-            max_download_time: 500,
-            speed_multiplier: 10.0, // 10x faster than real downloads
+            file_count: 2000,       // More files to process
+            duplicate_rate: 0.15,   // 15% duplicates
+            failure_rate: 0.08,     // Slightly higher failure rate for more events
+            min_download_time: 100, // Slower downloads for better visibility
+            max_download_time: 800,
+            speed_multiplier: 3.0, // Slower speed multiplier for longer demo
             include_edge_cases: true,
         }
     }
@@ -144,6 +145,8 @@ struct AppState {
     performance_history: Vec<(f64, f64)>, // (time, throughput)
     /// Queue size history
     queue_history: Vec<(f64, u64, u64, u64)>, // (time, pending, in_progress, completed)
+    /// Cached queue statistics for UI rendering
+    cached_queue_stats: Option<midas_fetcher::app::queue::QueueStats>,
     /// Simulation start time
     start_time: Instant,
     /// Whether simulation is running
@@ -165,6 +168,7 @@ impl AppState {
             worker_stats: Arc::new(RwLock::new(HashMap::new())),
             performance_history: Vec::new(),
             queue_history: Vec::new(),
+            cached_queue_stats: None,
             start_time: Instant::now(),
             running: true,
             selected_tab: 0,
@@ -189,8 +193,11 @@ impl AppState {
         }
     }
 
-    /// Add performance data point
+    /// Add performance data point and update cached stats
     async fn update_performance_history(&mut self) {
+        // Update cached queue stats for UI rendering
+        self.cached_queue_stats = Some(self.queue.stats().await);
+
         let throughput = self.current_throughput().await;
         let time = self.elapsed_time();
         self.performance_history.push((time, throughput));
@@ -261,6 +268,8 @@ async fn generate_synthetic_files(temp_dir: &TempDir, config: &SimulationConfig)
             format!("{:032x}", rng.r#gen::<u128>())
         };
 
+        let hash = Md5Hash::from_hex(&hash).unwrap();
+
         // Generate realistic MIDAS path
         let county = counties[rng.gen_range(0..counties.len())];
         let station = stations[rng.gen_range(0..stations.len())];
@@ -272,9 +281,9 @@ async fn generate_synthetic_files(temp_dir: &TempDir, config: &SimulationConfig)
             county, station, qc_version, county, station, qc_version, year
         );
 
-        if let Ok(file_info) = FileInfo::new(hash.clone(), path, temp_dir.path()) {
+        if let Ok(file_info) = FileInfo::new(hash, path, temp_dir.path()) {
             files.push(file_info);
-            seen_hashes.insert(hash);
+            seen_hashes.insert(hash.to_hex());
         }
 
         // Progress logging
@@ -313,14 +322,14 @@ async fn simulate_worker(
     loop {
         // Try to get work from queue
         if let Some(work_info) = queue.get_next_work().await {
-            let file_hash = work_info.work_id().to_string();
-            stats.current_task = Some(file_hash.clone());
+            let file_hash = *work_info.work_id();
+            stats.current_task = Some(file_hash.to_string());
             stats.last_activity = Some(Instant::now());
 
             // Notify that work started
             let _ = progress_tx.send(WorkerUpdate::Started {
                 worker_id,
-                file_hash: file_hash.clone(),
+                file_hash: file_hash.to_string(),
             });
 
             // Simulate download time and failure decisions
@@ -361,7 +370,7 @@ async fn simulate_worker(
                 stats.files_failed += 1;
                 let _ = progress_tx.send(WorkerUpdate::Failed {
                     worker_id,
-                    file_hash,
+                    file_hash: file_hash.to_string(),
                     error,
                 });
             } else {
@@ -377,7 +386,7 @@ async fn simulate_worker(
                 stats.total_download_time += download_time;
                 let _ = progress_tx.send(WorkerUpdate::Completed {
                     worker_id,
-                    file_hash,
+                    file_hash: file_hash.to_string(),
                     duration: download_time,
                 });
             }
@@ -581,21 +590,24 @@ fn render_right_panel(f: &mut Frame, app_state: &AppState, area: Rect) {
 }
 
 /// Render queue statistics
-fn render_queue_stats(f: &mut Frame, _app_state: &AppState, area: Rect) {
-    // This is a simplified version - we'll need to make it async-compatible
-    let queue_stats = format!(
-        "Queue Statistics\n\n\
-        Pending: {}\n\
-        In Progress: {}\n\
-        Completed: {}\n\
-        Failed: {}\n\
-        Success Rate: {:.1}%",
-        "Loading...", // We'll update this in the real implementation
-        "Loading...",
-        "Loading...",
-        "Loading...",
-        0.0
-    );
+fn render_queue_stats(f: &mut Frame, app_state: &AppState, area: Rect) {
+    let queue_stats = if let Some(ref stats) = app_state.cached_queue_stats {
+        format!(
+            "Queue Statistics\n\n\
+            Pending: {}\n\
+            In Progress: {}\n\
+            Completed: {}\n\
+            Failed: {}\n\
+            Success Rate: {:.1}%",
+            stats.pending_count,
+            stats.in_progress_count,
+            stats.completed_count,
+            stats.abandoned_count,
+            stats.success_rate()
+        )
+    } else {
+        "Queue Statistics\n\nInitializing...".to_string()
+    };
 
     let paragraph = Paragraph::new(queue_stats)
         .block(Block::default().title("Queue Status").borders(Borders::ALL))
@@ -605,9 +617,13 @@ fn render_queue_stats(f: &mut Frame, _app_state: &AppState, area: Rect) {
 }
 
 /// Render performance chart
-fn render_performance_chart(f: &mut Frame, _app_state: &AppState, area: Rect) {
-    // Placeholder for performance chart
-    let chart_data: Vec<(f64, f64)> = vec![(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)];
+fn render_performance_chart(f: &mut Frame, app_state: &AppState, area: Rect) {
+    // Use real performance data or placeholder if empty
+    let chart_data: Vec<(f64, f64)> = if app_state.performance_history.is_empty() {
+        vec![(0.0, 0.0)]
+    } else {
+        app_state.performance_history.clone()
+    };
 
     let datasets = vec![
         Dataset::default()
@@ -618,19 +634,23 @@ fn render_performance_chart(f: &mut Frame, _app_state: &AppState, area: Rect) {
             .data(&chart_data),
     ];
 
+    // Calculate dynamic bounds
+    let max_time = chart_data.iter().map(|(t, _)| *t).fold(60.0, f64::max);
+    let max_throughput = chart_data.iter().map(|(_, th)| *th).fold(10.0, f64::max);
+
     let chart = Chart::new(datasets)
         .block(Block::default().title("Performance").borders(Borders::ALL))
         .x_axis(
             Axis::default()
                 .title("Time (s)")
                 .style(Style::default().fg(Color::Gray))
-                .bounds([0.0, 60.0]),
+                .bounds([0.0, max_time]),
         )
         .y_axis(
             Axis::default()
                 .title("Files/sec")
                 .style(Style::default().fg(Color::Gray))
-                .bounds([0.0, 10.0]),
+                .bounds([0.0, max_throughput * 1.1]), // Add 10% padding
         );
 
     f.render_widget(chart, area);
@@ -707,21 +727,30 @@ async fn handle_input() -> bool {
 
 /// Main simulation function
 async fn run_simulation() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
+    // Initialize tracing with minimal verbosity for clean output
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::ERROR) // Only show errors, suppress warnings
+        .init();
 
     // Configuration
     let config = SimulationConfig::default();
 
-    info!(
-        "Starting queue simulation with {} workers and {} files",
+    println!(
+        "🚀 Starting queue simulation with {} workers and {} files",
         config.worker_count, config.file_count
+    );
+    println!(
+        "⚙️  Config: {:.0}% failure rate, {:.0}% duplicates, {}x speed",
+        config.failure_rate * 100.0,
+        config.duplicate_rate * 100.0,
+        config.speed_multiplier
     );
 
     // Create temporary directory for file destinations
     let temp_dir = TempDir::new()?;
 
     // Generate synthetic files
+    println!("📋 Generating {} synthetic files...", config.file_count);
     let files = generate_synthetic_files(&temp_dir, &config).await;
 
     // Create work queue
@@ -735,7 +764,7 @@ async fn run_simulation() -> Result<(), Box<dyn std::error::Error>> {
     let queue = Arc::new(WorkQueue::with_config(queue_config));
 
     // Add all files to queue
-    info!("Adding {} files to work queue...", files.len());
+    println!("⚡ Adding {} files to work queue...", files.len());
     for file in files {
         if let Err(e) = queue.add_work(file).await {
             warn!("Failed to add work to queue: {}", e);
@@ -748,13 +777,34 @@ async fn run_simulation() -> Result<(), Box<dyn std::error::Error>> {
         config.clone(),
     )));
 
-    // Set up terminal
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    // Try to set up terminal UI, fall back to text mode if it fails
+    let terminal_result = enable_raw_mode().and_then(|_| {
+        let mut stdout = std::io::stdout();
+        stdout.execute(EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(stdout);
+        Terminal::new(backend)
+    });
 
+    match terminal_result {
+        Ok(terminal) => {
+            println!("🖥️  Starting interactive terminal UI...");
+            println!("📊 Watch real-time dashboard - press 'q' or ESC to exit");
+            run_interactive_simulation(terminal, queue, app_state, config).await
+        }
+        Err(_) => {
+            println!("📊 Terminal UI not available, running in text mode...");
+            run_text_simulation(queue, app_state, config).await
+        }
+    }
+}
+
+/// Run the simulation with interactive terminal UI
+async fn run_interactive_simulation(
+    mut terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
+    queue: Arc<WorkQueue>,
+    app_state: Arc<RwLock<AppState>>,
+    config: SimulationConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Create channels for worker communication
     let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
 
@@ -857,7 +907,44 @@ async fn run_simulation() -> Result<(), Box<dyn std::error::Error>> {
 
         // Check if simulation is finished
         if queue.is_finished().await {
-            info!("Simulation completed - all work finished");
+            // Update final state one more time
+            {
+                let mut state = app_state.write().await;
+                state.update_performance_history().await;
+                state.update_queue_history().await;
+                state.log_edge_event("🎉 Simulation completed successfully!".to_string());
+            }
+
+            // Render final state
+            {
+                let state = app_state.read().await;
+                terminal.draw(|f| {
+                    render_dashboard(f, &state, f.size());
+                })?;
+            }
+
+            // Show completion message and wait for user input
+            {
+                let mut state = app_state.write().await;
+                state.log_edge_event("Press 'q' or ESC to exit...".to_string());
+            }
+
+            // Keep showing the final results until user exits
+            loop {
+                {
+                    let state = app_state.read().await;
+                    terminal.draw(|f| {
+                        render_dashboard(f, &state, f.size());
+                    })?;
+                }
+
+                if !handle_input().await {
+                    break;
+                }
+
+                sleep(Duration::from_millis(100)).await;
+            }
+
             break;
         }
 
@@ -883,6 +970,165 @@ async fn run_simulation() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for background tasks
     let _ = edge_case_handle.await;
     let _ = ui_update_handle.await;
+
+    // Print final statistics
+    let final_stats = queue.stats().await;
+    let elapsed = app_state.read().await.elapsed_time();
+
+    println!("\n📊 Simulation Results:");
+    println!("├─ Duration: {:.1} seconds", elapsed);
+    println!("├─ Files processed: {}", final_stats.completed_count);
+    println!("├─ Files failed: {}", final_stats.abandoned_count);
+    println!("├─ Success rate: {:.1}%", final_stats.success_rate());
+    println!("├─ Duplicates detected: {}", final_stats.duplicate_count);
+    println!(
+        "├─ Average throughput: {:.1} files/sec",
+        final_stats.completed_count as f64 / elapsed
+    );
+    println!(
+        "└─ Worker utilization: {:.1}%",
+        final_stats.worker_utilization(config.worker_count as u32)
+    );
+
+    // Print worker statistics
+    let worker_stats = app_state.read().await.worker_stats.read().await.clone();
+    println!("\n👷 Worker Performance:");
+    for (worker_id, stats) in worker_stats.iter() {
+        println!(
+            "├─ Worker {}: {} completed, {} failed, {:.1}% success, avg time: {:?}",
+            worker_id,
+            stats.files_completed,
+            stats.files_failed,
+            stats.success_rate(),
+            stats.average_download_time()
+        );
+    }
+
+    println!("\n✅ Work-stealing queue simulation completed successfully!");
+    println!("Key observations:");
+    println!("  • No worker starvation occurred");
+    println!("  • Queue efficiently distributed work across all workers");
+    println!("  • Failed work was automatically retried");
+    println!("  • Duplicate files were detected and filtered");
+
+    Ok(())
+}
+
+/// Run the simulation in text-only mode (no terminal UI)
+async fn run_text_simulation(
+    queue: Arc<WorkQueue>,
+    app_state: Arc<RwLock<AppState>>,
+    config: SimulationConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Create channels for worker communication
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+
+    // Spawn workers
+    println!("👷 Starting {} workers...", config.worker_count);
+    let mut worker_handles = Vec::new();
+    for worker_id in 1..=config.worker_count {
+        let queue_clone = Arc::clone(&queue);
+        let config_clone = config.clone();
+        let progress_tx_clone = progress_tx.clone();
+        let worker_stats_clone = Arc::clone(&app_state.read().await.worker_stats);
+
+        let handle = tokio::spawn(async move {
+            simulate_worker(
+                worker_id as u32,
+                queue_clone,
+                config_clone,
+                progress_tx_clone,
+                worker_stats_clone,
+            )
+            .await;
+        });
+        worker_handles.push(handle);
+    }
+
+    // Spawn edge case simulator
+    let edge_case_handle = tokio::spawn({
+        let queue_clone = Arc::clone(&queue);
+        let config_clone = config.clone();
+        let app_state_clone = Arc::clone(&app_state);
+        async move {
+            simulate_edge_cases(queue_clone, config_clone, app_state_clone).await;
+        }
+    });
+
+    // Progress reporting task
+    let progress_handle = tokio::spawn({
+        let queue_clone = Arc::clone(&queue);
+        let app_state_clone = Arc::clone(&app_state);
+        async move {
+            let mut last_completed = 0;
+            let mut interval = interval(Duration::from_secs(5));
+
+            loop {
+                interval.tick().await;
+
+                let stats = queue_clone.stats().await;
+                let elapsed = app_state_clone.read().await.elapsed_time();
+
+                if stats.completed_count != last_completed {
+                    let throughput = if elapsed > 0.0 {
+                        stats.completed_count as f64 / elapsed
+                    } else {
+                        0.0
+                    };
+
+                    println!(
+                        "📈 Progress: {} completed, {} in progress, {} pending | {:.1} files/sec | {:.1}s elapsed",
+                        stats.completed_count,
+                        stats.in_progress_count,
+                        stats.pending_count,
+                        throughput,
+                        elapsed
+                    );
+
+                    last_completed = stats.completed_count;
+                }
+
+                if queue_clone.is_finished().await {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Handle worker updates
+    let update_handle = tokio::spawn(async move {
+        let mut failed_count = 0;
+
+        while let Some(update) = progress_rx.recv().await {
+            match update {
+                WorkerUpdate::Failed {
+                    worker_id, error, ..
+                } => {
+                    failed_count += 1;
+                    if failed_count <= 5 {
+                        // Only show first 5 failures to avoid spam
+                        println!("⚠️  Worker {} failed: {}", worker_id, error);
+                    } else if failed_count == 6 {
+                        println!("⚠️  ... (suppressing further failure messages for clean output)");
+                    }
+                }
+                _ => {} // Ignore other updates in text mode
+            }
+        }
+    });
+
+    // Wait for completion
+    println!("⏳ Processing files...");
+
+    // Wait for all workers to finish
+    for handle in worker_handles {
+        let _ = handle.await;
+    }
+
+    // Stop background tasks
+    let _ = edge_case_handle.await;
+    let _ = progress_handle.await;
+    let _ = update_handle.await;
 
     // Print final statistics
     let final_stats = queue.stats().await;

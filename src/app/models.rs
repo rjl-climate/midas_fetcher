@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::hash::Md5Hash;
 use crate::errors::{ManifestError, ManifestResult};
 
 /// Quality control version for MIDAS data files
@@ -276,7 +277,7 @@ impl DatasetInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
     /// MD5 hash for verification and deduplication
-    pub hash: String,
+    pub hash: Md5Hash,
     /// Original relative path from manifest
     pub relative_path: String,
     /// Extracted filename for display/logging
@@ -299,7 +300,7 @@ impl FileInfo {
     ///
     /// # Arguments
     ///
-    /// * `hash` - MD5 hash string
+    /// * `hash` - MD5 hash (efficient byte array representation)
     /// * `relative_path` - Path from manifest
     /// * `destination_root` - Base directory for file storage
     ///
@@ -307,15 +308,10 @@ impl FileInfo {
     ///
     /// Returns `ManifestError` if path parsing fails
     pub fn new(
-        hash: String,
+        hash: Md5Hash,
         relative_path: String,
         destination_root: &Path,
     ) -> ManifestResult<Self> {
-        // Validate hash format
-        if !is_valid_md5_hash(&hash) {
-            return Err(ManifestError::InvalidHash { hash });
-        }
-
         // Parse dataset info from path
         let dataset_info = DatasetInfo::from_path(&relative_path)?;
 
@@ -331,7 +327,7 @@ impl FileInfo {
         let destination_path = destination_root.join(normalized_path);
 
         Ok(FileInfo {
-            hash: hash.to_lowercase(), // Normalize to lowercase
+            hash,
             relative_path,
             file_name,
             dataset_info,
@@ -417,7 +413,7 @@ impl Eq for FileInfo {}
 /// Expected format: "hash  ./path/to/file"
 /// Hash should be 32-character hexadecimal MD5
 /// Path should start with "./"
-pub fn parse_manifest_line(line: &str) -> ManifestResult<(String, String)> {
+pub fn parse_manifest_line(line: &str) -> ManifestResult<(Md5Hash, String)> {
     let line = line.trim();
 
     // Skip empty lines
@@ -448,12 +444,8 @@ pub fn parse_manifest_line(line: &str) -> ManifestResult<(String, String)> {
         });
     }
 
-    // Validate hash format
-    if !is_valid_md5_hash(hash) {
-        return Err(ManifestError::InvalidHash {
-            hash: hash.to_string(),
-        });
-    }
+    // Parse and validate hash format
+    let hash = Md5Hash::from_hex(hash)?;
 
     // Validate path format
     if !path.starts_with("./") {
@@ -462,18 +454,7 @@ pub fn parse_manifest_line(line: &str) -> ManifestResult<(String, String)> {
         });
     }
 
-    Ok((hash.to_lowercase(), path.to_string()))
-}
-
-/// Validate MD5 hash format
-///
-/// # Arguments
-///
-/// * `hash` - Hash string to validate
-///
-/// Returns true if the hash is a valid 32-character hexadecimal string
-fn is_valid_md5_hash(hash: &str) -> bool {
-    hash.len() == 32 && hash.chars().all(|c| c.is_ascii_hexdigit())
+    Ok((hash, path.to_string()))
 }
 
 /// Generate a unique identifier for a FileInfo based on its content hash
@@ -490,16 +471,17 @@ mod tests {
 
     #[test]
     fn test_valid_md5_hash() {
-        assert!(is_valid_md5_hash("50c9d1c465f3cbff652be1509c2e2a4e"));
-        assert!(is_valid_md5_hash("9734faa872681f96b144f60d29d52011"));
-        assert!(is_valid_md5_hash("abcdef1234567890abcdef1234567890"));
+        // Test valid hashes through Md5Hash::from_hex
+        assert!(Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e").is_ok());
+        assert!(Md5Hash::from_hex("9734faa872681f96b144f60d29d52011").is_ok());
+        assert!(Md5Hash::from_hex("abcdef1234567890abcdef1234567890").is_ok());
 
-        // Invalid cases
-        assert!(!is_valid_md5_hash(""));
-        assert!(!is_valid_md5_hash("50c9d1c465f3cbff652be1509c2e2a4")); // too short
-        assert!(!is_valid_md5_hash("50c9d1c465f3cbff652be1509c2e2a4e5")); // too long
-        assert!(!is_valid_md5_hash("50c9d1c465f3cbff652be1509c2e2a4g")); // invalid char
-        assert!(is_valid_md5_hash("50C9D1C465F3CBFF652BE1509C2E2A4E")); // uppercase (should be valid)
+        // Test invalid hashes
+        assert!(Md5Hash::from_hex("").is_err());
+        assert!(Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4").is_err()); // too short
+        assert!(Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e5").is_err()); // too long
+        assert!(Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4g").is_err()); // invalid char
+        assert!(Md5Hash::from_hex("50C9D1C465F3CBFF652BE1509C2E2A4E").is_ok()); // uppercase (should be valid)
     }
 
     #[test]
@@ -507,13 +489,13 @@ mod tests {
         // Valid cases
         let (hash, path) =
             parse_manifest_line("50c9d1c465f3cbff652be1509c2e2a4e  ./data/test.csv").unwrap();
-        assert_eq!(hash, "50c9d1c465f3cbff652be1509c2e2a4e");
+        assert_eq!(hash.to_hex(), "50c9d1c465f3cbff652be1509c2e2a4e");
         assert_eq!(path, "./data/test.csv");
 
         // Test with multiple spaces
         let (hash, path) =
             parse_manifest_line("50c9d1c465f3cbff652be1509c2e2a4e    ./data/test.csv").unwrap();
-        assert_eq!(hash, "50c9d1c465f3cbff652be1509c2e2a4e");
+        assert_eq!(hash.to_hex(), "50c9d1c465f3cbff652be1509c2e2a4e");
         assert_eq!(path, "./data/test.csv");
 
         // Invalid cases
@@ -578,9 +560,10 @@ mod tests {
         let hash = "50c9d1c465f3cbff652be1509c2e2a4e".to_string();
         let path = "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/qc-version-1/test_file.csv".to_string();
 
-        let file_info = FileInfo::new(hash.clone(), path.clone(), destination_root).unwrap();
+        let hash_obj = Md5Hash::from_hex(&hash).unwrap();
+        let file_info = FileInfo::new(hash_obj, path.clone(), destination_root).unwrap();
 
-        assert_eq!(file_info.hash, hash);
+        assert_eq!(file_info.hash.to_hex(), hash);
         assert_eq!(file_info.relative_path, path);
         assert_eq!(file_info.file_name, "test_file.csv");
         assert_eq!(file_info.retry_count, 0);
@@ -594,14 +577,10 @@ mod tests {
     #[test]
     fn test_file_info_invalid_hash() {
         let temp_dir = tempdir().unwrap();
-        let destination_root = temp_dir.path();
+        let _destination_root = temp_dir.path();
 
-        let result = FileInfo::new(
-            "invalid_hash".to_string(),
-            "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test.csv"
-                .to_string(),
-            destination_root,
-        );
+        // This should fail during Md5Hash::from_hex, so test the hash validation directly
+        let result = Md5Hash::from_hex("invalid_hash");
 
         assert!(result.is_err());
         assert!(matches!(
@@ -615,8 +594,9 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let destination_root = temp_dir.path();
 
+        let hash = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e").unwrap();
         let mut file_info = FileInfo::new(
-            "50c9d1c465f3cbff652be1509c2e2a4e".to_string(),
+            hash,
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test.csv"
                 .to_string(),
             destination_root,
@@ -653,8 +633,9 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let destination_root = temp_dir.path();
 
+        let hash = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e").unwrap();
         let file_info = FileInfo::new(
-            "50c9d1c465f3cbff652be1509c2e2a4e".to_string(),
+            hash,
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test.csv"
                 .to_string(),
             destination_root,
@@ -680,24 +661,27 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let destination_root = temp_dir.path();
 
+        let hash1 = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e").unwrap();
         let file1 = FileInfo::new(
-            "50c9d1c465f3cbff652be1509c2e2a4e".to_string(),
+            hash1,
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test1.csv"
                 .to_string(),
             destination_root,
         )
         .unwrap();
 
+        let hash2 = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e").unwrap();
         let file2 = FileInfo::new(
-            "50c9d1c465f3cbff652be1509c2e2a4e".to_string(),
+            hash2,
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test2.csv"
                 .to_string(),
             destination_root,
         )
         .unwrap();
 
+        let hash3 = Md5Hash::from_hex("9734faa872681f96b144f60d29d52011").unwrap();
         let file3 = FileInfo::new(
-            "9734faa872681f96b144f60d29d52011".to_string(),
+            hash3,
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test3.csv"
                 .to_string(),
             destination_root,

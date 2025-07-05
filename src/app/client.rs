@@ -769,13 +769,14 @@ mod tests {
         println!("   Calculated (downloaded): {}", calculated_hash);
 
         // Verify hashes match
-        if calculated_hash == first_file.hash {
+        if calculated_hash == first_file.hash.to_hex() {
             println!("✅ SUCCESS: Hash validation passed!");
             println!("   The manifest hash matches the actual file content.");
         } else {
             panic!(
                 "❌ FAILURE: Hash mismatch!\n   Expected: {}\n   Calculated: {}\n   This indicates either:\n   1. The manifest file is outdated\n   2. The file was modified on CEDA\n   3. There's an issue with the download process",
-                first_file.hash, calculated_hash
+                first_file.hash.to_hex(),
+                calculated_hash
             );
         }
 

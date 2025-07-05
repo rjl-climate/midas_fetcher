@@ -33,12 +33,14 @@
 //! ```
 
 pub mod client;
+pub mod hash;
 pub mod manifest;
 pub mod models;
 pub mod queue;
 
 // Re-export main public API
 pub use client::{CedaClient, ClientConfig};
+pub use hash::Md5Hash;
 pub use manifest::{
     ManifestConfig, ManifestStats, ManifestStreamer, collect_all_files, validate_manifest,
 };
