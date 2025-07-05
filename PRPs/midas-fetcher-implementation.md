@@ -304,13 +304,16 @@ CREATE src/main.rs:
   - PROVIDE proper error reporting to stderr
 ```
 
-### Task 10: Library Integration
+### Task 10: Library Integration and cleanup
 ```yaml
 CREATE src/lib.rs:
   - EXPOSE public API for future Tauri integration
   - RE-EXPORT key types and functions
   - DOCUMENT usage patterns and examples
   - ENSURE no CLI dependencies leak through
+
+CLEANUP:
+
 ```
 
 ## Critical Implementation Details

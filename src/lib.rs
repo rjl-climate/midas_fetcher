@@ -3,6 +3,7 @@
 //! A Rust library for downloading weather data from the UK Met Office MIDAS Open dataset.
 //! Provides efficient, concurrent downloading with proper rate limiting and error handling.
 
+pub mod auth;
 pub mod constants;
 pub mod errors;
 
