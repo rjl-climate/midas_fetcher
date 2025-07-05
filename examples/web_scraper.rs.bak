@@ -1,0 +1,479 @@
+//! Web scraping module for dynamic CEDA dataset and version discovery
+//!
+//! This module provides functions to dynamically discover available datasets and versions
+//! from CEDA web pages, replacing hard-coded lists with live web scraping.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use governor::{Quota, RateLimiter};
+use reqwest::Client;
+use scraper::{Html, Selector};
+use url::Url;
+
+use crate::constants::*;
+use crate::errors::WebScrapingError;
+use crate::simple_orchestrator::{Dataset, DatasetVersion};
+
+/// Configuration for web scraping operations
+#[derive(Debug, Clone)]
+pub struct ScrapingConfig {
+    /// Rate limit for scraping requests (requests per second)
+    pub rate_limit: u32,
+    /// HTTP timeout for scraping requests
+    pub timeout: Duration,
+    /// User agent string for requests
+    pub user_agent: String,
+    /// Enable HTTP/2 for requests
+    #[allow(dead_code)]
+    pub enable_http2: bool,
+}
+
+impl Default for ScrapingConfig {
+    fn default() -> Self {
+        Self {
+            rate_limit: WEB_SCRAPING_RATE_LIMIT,
+            timeout: Duration::from_secs(WEB_SCRAPING_TIMEOUT_SECS),
+            user_agent: USER_AGENT.to_string(),
+            enable_http2: true,
+        }
+    }
+}
+
+/// Create an HTTP client optimized for web scraping
+async fn create_scraping_client(config: &ScrapingConfig) -> Result<Client, WebScrapingError> {
+    let client = Client::builder()
+        .timeout(config.timeout)
+        .user_agent(&config.user_agent)
+        .cookie_store(true) // Enable cookies for session handling
+        .redirect(reqwest::redirect::Policy::limited(10)) // Follow redirects
+        // Don't force HTTP/2 - let it negotiate
+        .tcp_nodelay(true)
+        .build()
+        .map_err(|e| WebScrapingError::ClientCreationFailed(e.to_string()))?;
+
+    Ok(client)
+}
+
+/// Parse the main CEDA data page to discover available datasets
+///
+/// This function scrapes the main CEDA data directory to find all available datasets
+/// by looking for links that match the expected dataset URL pattern.
+///
+/// # Arguments
+///
+/// * `base_url` - The base CEDA data URL (https://data.ceda.ac.uk/badc/ukmo-midas-open/data)
+/// * `config` - Configuration for scraping behavior
+///
+/// # Returns
+///
+/// A vector of `Dataset` structs representing available datasets
+///
+/// # Errors
+///
+/// Returns `WebScrapingError` if:
+/// - HTTP request fails
+/// - HTML parsing fails
+/// - CSS selector parsing fails
+/// - URL construction fails
+pub async fn parse_main_ceda_page(
+    base_url: &str,
+    config: Option<ScrapingConfig>,
+) -> Result<Vec<Dataset>, WebScrapingError> {
+    let config = config.unwrap_or_default();
+    let client = create_scraping_client(&config).await?;
+
+    // Create rate limiter for scraping requests
+    let rate_limiter = Arc::new(RateLimiter::direct(Quota::per_second(
+        std::num::NonZeroU32::new(config.rate_limit).unwrap(),
+    )));
+
+    // Apply rate limiting
+    rate_limiter.until_ready().await;
+
+    tracing::info!("Scraping main CEDA page: {}", base_url);
+
+    // Make HTTP request
+    let response = client
+        .get(base_url)
+        .send()
+        .await
+        .map_err(|e| WebScrapingError::HttpError(e.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(WebScrapingError::HttpError(format!(
+            "HTTP {} from {}",
+            response.status(),
+            base_url
+        )));
+    }
+
+    let html = response
+        .text()
+        .await
+        .map_err(|e| WebScrapingError::HtmlParseError(e.to_string()))?;
+
+    // Parse HTML document
+    let document = Html::parse_document(&html);
+    let link_selector = Selector::parse(DATASET_LINK_SELECTOR)
+        .map_err(|_| WebScrapingError::ParseError("Invalid CSS selector".to_string()))?;
+
+    let mut datasets = Vec::new();
+    let base_url_parsed =
+        Url::parse(base_url).map_err(|e| WebScrapingError::UrlParseError(e.to_string()))?;
+
+    // Extract dataset links
+    let mut found_links = 0;
+    for element in document.select(&link_selector) {
+        if let Some(href) = element.value().attr("href") {
+            found_links += 1;
+            tracing::debug!("Found link: {}", href);
+
+            // Skip unwanted links
+            if href.starts_with("../") || href == "./" || href.contains("://") {
+                tracing::debug!("Skipping unwanted link: {}", href);
+                continue;
+            }
+
+            // Skip non-dataset directories
+            if !href.contains("uk-") || href.ends_with(".txt") || href.ends_with(".html") {
+                tracing::debug!("Skipping non-dataset link: {}", href);
+                continue;
+            }
+
+            tracing::debug!("Processing dataset link: {}", href);
+
+            // Build absolute URL
+            let full_url = base_url_parsed
+                .join(href)
+                .map_err(|e| WebScrapingError::UrlParseError(e.to_string()))?;
+
+            // Extract dataset name from URL path
+            let dataset_name = match extract_dataset_name_from_url(&full_url) {
+                Ok(name) => name,
+                Err(e) => {
+                    tracing::warn!("Failed to extract dataset name from {}: {}", full_url, e);
+                    continue;
+                }
+            };
+
+            // Create human-readable name
+            let display_name = format_dataset_display_name(&dataset_name);
+
+            tracing::info!("Found dataset: {} -> {}", dataset_name, display_name);
+
+            datasets.push(Dataset {
+                id: dataset_name,
+                name: display_name,
+                url: full_url,
+            });
+        }
+    }
+
+    tracing::info!(
+        "Processed {} total links, found {} datasets",
+        found_links,
+        datasets.len()
+    );
+
+    tracing::info!("Discovered {} datasets", datasets.len());
+    Ok(datasets)
+}
+
+/// Parse a dataset page to discover available versions
+///
+/// This function scrapes a specific dataset's page to find all available version directories.
+///
+/// # Arguments
+///
+/// * `dataset_url` - URL to the dataset directory
+/// * `config` - Configuration for scraping behavior
+///
+/// # Returns
+///
+/// A vector of `DatasetVersion` structs representing available versions
+pub async fn parse_dataset_page(
+    dataset_url: &Url,
+    config: Option<ScrapingConfig>,
+) -> Result<Vec<DatasetVersion>, WebScrapingError> {
+    let config = config.unwrap_or_default();
+    let client = create_scraping_client(&config).await?;
+
+    // Create rate limiter
+    let rate_limiter = Arc::new(RateLimiter::direct(Quota::per_second(
+        std::num::NonZeroU32::new(config.rate_limit).unwrap(),
+    )));
+
+    rate_limiter.until_ready().await;
+
+    tracing::info!("Scraping dataset page: {}", dataset_url);
+
+    let response = client
+        .get(dataset_url.as_str())
+        .send()
+        .await
+        .map_err(|e| WebScrapingError::HttpError(e.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(WebScrapingError::HttpError(format!(
+            "HTTP {} from {}",
+            response.status(),
+            dataset_url
+        )));
+    }
+
+    let html = response
+        .text()
+        .await
+        .map_err(|e| WebScrapingError::HtmlParseError(e.to_string()))?;
+
+    let document = Html::parse_document(&html);
+    let version_selector = Selector::parse(VERSION_LINK_SELECTOR)
+        .map_err(|_| WebScrapingError::ParseError("Invalid CSS selector".to_string()))?;
+
+    let mut versions = Vec::new();
+
+    for element in document.select(&version_selector) {
+        if let Some(href) = element.value().attr("href") {
+            // Skip unwanted links
+            if href.starts_with("../") || href == "./" || href.contains("://") {
+                continue;
+            }
+
+            // Only process dataset-version links
+            if !href.contains("dataset-version-") {
+                continue;
+            }
+
+            let version_url = dataset_url
+                .join(href)
+                .map_err(|e| WebScrapingError::UrlParseError(e.to_string()))?;
+
+            // Extract version ID from URL
+            let version_id = extract_version_from_url(&version_url)?;
+            let display_name = format_version_display_name(&version_id);
+
+            versions.push(DatasetVersion {
+                id: version_id,
+                name: display_name,
+                url: version_url,
+            });
+        }
+    }
+
+    // Sort versions by ID (newest first)
+    versions.sort_by(|a, b| b.id.cmp(&a.id));
+
+    tracing::info!("Discovered {} versions for dataset", versions.len());
+    Ok(versions)
+}
+
+/// Find manifest URL for a specific dataset and version
+///
+/// This function searches the main CEDA manifest directory to find the appropriate
+/// manifest file for the given dataset version.
+///
+/// # Arguments
+///
+/// * `dataset_version` - The version ID to find a manifest for (e.g., "202407")
+/// * `config` - Configuration for scraping behavior
+///
+/// # Returns
+///
+/// The URL of the manifest file if found, None if not available
+pub async fn find_manifest_url(
+    dataset_version: &str,
+    config: Option<ScrapingConfig>,
+) -> Result<Option<String>, WebScrapingError> {
+    let config = config.unwrap_or_default();
+    let client = create_scraping_client(&config).await?;
+
+    let rate_limiter = Arc::new(RateLimiter::direct(Quota::per_second(
+        std::num::NonZeroU32::new(config.rate_limit).unwrap(),
+    )));
+
+    rate_limiter.until_ready().await;
+
+    let manifest_base_url = MANIFEST_BASE_URL;
+    tracing::info!("Searching for manifest for version {}", dataset_version);
+
+    let response = client
+        .get(manifest_base_url)
+        .send()
+        .await
+        .map_err(|e| WebScrapingError::HttpError(e.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(WebScrapingError::HttpError(format!(
+            "HTTP {} from {}",
+            response.status(),
+            manifest_base_url
+        )));
+    }
+
+    let html = response
+        .text()
+        .await
+        .map_err(|e| WebScrapingError::HtmlParseError(e.to_string()))?;
+
+    let document = Html::parse_document(&html);
+    let manifest_selector = Selector::parse(MANIFEST_LINK_SELECTOR)
+        .map_err(|_| WebScrapingError::ParseError("Invalid CSS selector".to_string()))?;
+
+    // Look for manifest file matching the version
+    for element in document.select(&manifest_selector) {
+        if let Some(href) = element.value().attr("href") {
+            tracing::debug!("Checking manifest href: {}", href);
+            if href.contains(&format!("v{}-md5s.txt", dataset_version)) {
+                let manifest_url = if href.starts_with("http") {
+                    // href is already a full URL
+                    href.to_string()
+                } else {
+                    // href is a relative path - construct full URL
+                    format!("{}{}", MANIFEST_DOWNLOAD_BASE_URL, href)
+                };
+                tracing::info!("Found manifest: {}", manifest_url);
+                return Ok(Some(manifest_url));
+            }
+        }
+    }
+
+    tracing::info!("No manifest found for version {}", dataset_version);
+    Ok(None)
+}
+
+/// Extract dataset name from a dataset URL
+fn extract_dataset_name_from_url(url: &Url) -> Result<String, WebScrapingError> {
+    let path = url.path();
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+    // Look for the dataset name in the path segments
+    // Expected pattern: /badc/ukmo-midas-open/data/uk-dataset-name
+    for segment in segments.iter().rev() {
+        if segment.starts_with("uk-") && !segment.contains("midas") {
+            return Ok(segment.to_string());
+        }
+    }
+
+    Err(WebScrapingError::ParseError(
+        "Could not extract dataset name from URL".to_string(),
+    ))
+}
+
+/// Extract version ID from a dataset version URL
+fn extract_version_from_url(url: &Url) -> Result<String, WebScrapingError> {
+    let path = url.path();
+
+    // Look for dataset-version-YYYYMM pattern
+    if let Some(start) = path.find("dataset-version-") {
+        let version_part = &path[start + "dataset-version-".len()..];
+        let end = version_part.find('/').unwrap_or(version_part.len());
+        let version = &version_part[..end];
+
+        if version.len() == 6 && version.chars().all(|c| c.is_ascii_digit()) {
+            return Ok(version.to_string());
+        }
+    }
+
+    Err(WebScrapingError::ParseError(
+        "Could not extract version from URL".to_string(),
+    ))
+}
+
+/// Format dataset name for display
+fn format_dataset_display_name(dataset_id: &str) -> String {
+    let formatted = dataset_id
+        .replace("uk-", "")
+        .replace("-", " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars: Vec<char> = word.chars().collect();
+            if !chars.is_empty() {
+                chars[0] = chars[0].to_uppercase().next().unwrap_or(chars[0]);
+            }
+            chars.into_iter().collect::<String>()
+        })
+        .collect::<Vec<String>>()
+        .join(" ");
+
+    format!("UK {}", formatted)
+}
+
+/// Format version ID for display
+fn format_version_display_name(version_id: &str) -> String {
+    if version_id.len() == 6 {
+        let year = &version_id[..4];
+        let month = &version_id[4..];
+        let month_name = match month {
+            "01" => "January",
+            "02" => "February",
+            "03" => "March",
+            "04" => "April",
+            "05" => "May",
+            "06" => "June",
+            "07" => "July",
+            "08" => "August",
+            "09" => "September",
+            "10" => "October",
+            "11" => "November",
+            "12" => "December",
+            _ => month,
+        };
+        format!("{} {} (v{})", month_name, year, version_id)
+    } else {
+        format!("Version {}", version_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_dataset_name_from_url() {
+        let url = Url::parse(
+            "https://data.ceda.ac.uk/badc/ukmo-midas-open/data/uk-daily-temperature-obs",
+        )
+        .unwrap();
+        let name = extract_dataset_name_from_url(&url).unwrap();
+        assert_eq!(name, "uk-daily-temperature-obs");
+    }
+
+    #[test]
+    fn test_extract_version_from_url() {
+        let url = Url::parse("https://data.ceda.ac.uk/badc/ukmo-midas-open/data/uk-daily-temperature-obs/dataset-version-202407").unwrap();
+        let version = extract_version_from_url(&url).unwrap();
+        assert_eq!(version, "202407");
+    }
+
+    #[test]
+    fn test_format_dataset_display_name() {
+        assert_eq!(
+            format_dataset_display_name("uk-daily-temperature-obs"),
+            "UK Daily Temperature Obs"
+        );
+        assert_eq!(
+            format_dataset_display_name("uk-hourly-weather-obs"),
+            "UK Hourly Weather Obs"
+        );
+    }
+
+    #[test]
+    fn test_format_version_display_name() {
+        assert_eq!(format_version_display_name("202407"), "July 2024 (v202407)");
+        assert_eq!(
+            format_version_display_name("202001"),
+            "January 2020 (v202001)"
+        );
+    }
+
+    #[test]
+    fn test_scraping_config_default() {
+        let config = ScrapingConfig::default();
+        assert_eq!(config.rate_limit, WEB_SCRAPING_RATE_LIMIT);
+        assert_eq!(
+            config.timeout,
+            Duration::from_secs(WEB_SCRAPING_TIMEOUT_SECS)
+        );
+    }
+}

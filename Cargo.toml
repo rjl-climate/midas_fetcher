@@ -1,0 +1,39 @@
+[package]
+name = "midas_fetcher"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Core async runtime and networking
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.11", features = ["json", "cookies"] }
+url = "2.4"
+
+# Rate limiting and backoff
+governor = "0.6"
+backoff = "0.4"
+
+# HTML parsing for CSRF tokens
+scraper = "0.18"
+
+# CLI and progress
+clap = { version = "4.0", features = ["derive"] }
+indicatif = "0.17"
+
+# Error handling and logging
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Serialization and credentials
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+rpassword = "7.0"
+dotenv = "0.15"
+
+[dev-dependencies]
+# Testing
+tempfile = "3.8"
+tokio-test = "0.4"

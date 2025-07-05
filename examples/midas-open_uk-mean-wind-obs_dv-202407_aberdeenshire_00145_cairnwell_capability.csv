@@ -1,0 +1,39 @@
+Conventions,G,BADC-CSV,1
+title,G,Midas Open: Station capability information for uk-mean-wind-obs
+comments,G,This file documents the range of identifier types associated with a unique station in this version of the dataset
+comments,G,A station may be associated with different identifiers relating to different reporting roles
+comments,G,The MIDAS src_id is used as a consistent and unique identifier for a station throughout MIDAS-open datasets
+source,G,Met Office MIDAS database
+creator,G,Met Office
+activity,G,Met Office MIDAS Open: UK Land Surface Stations Data
+feature_type,G,point collection
+collection_name,G,midas-open
+collection_version_number,G,dataset-version-202407
+history,G,Created 2024-07-24
+last_revised_date,G,2024-07-24
+observation_station,G,cairnwell
+historic_county_name,G,aberdeenshire
+authority,G,Met Office
+src_id,G,00145
+location,G,56.879,-3.421
+height,G,928,m
+date_valid,G,1994-01-01 00:00:00,2022-12-31 23:59:59
+coordinate_variable,id,x
+long_name,id,The identifier associated with a particular report type for this station,1
+type,id,int
+comments,id,This is the numerical identifier
+long_name,id_type,The identifier type associated with a particular reporting capability for this station,1
+type,id_type,char
+comments,id_type,This identifies the group of reporting types (or capabilities) this identifier belongs to
+long_name,met_domain_name,message type,1
+type,met_domain_name,char
+comments,met_domain_name,For more information on message types see the MIDAS documentation
+long_name,first_year,first year of data associated with this id/id_type in this version of this dataset,year
+type,first_year,float
+long_name,last_year,last year of data associated with this id/id_type in this version of this dataset,year
+type,last_year,float
+data
+id,id_type,met_domain_name,first_year,last_year
+03072,WMO,SYNOP,1997,2022
+121001,WIND,HCM,1994,2022
+end data
