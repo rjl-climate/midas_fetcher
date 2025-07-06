@@ -10,7 +10,9 @@ A command-line tool and Rust library designed to efficiently download large volu
 
 > **NOTE**
 > There are two companion apps that build on this tool.
+>
 > [Midas Processor](https://github.com/rjl-climate/midas_processor): A rust app to convert the MIDAS dataset downloaded by this tool into a .parquet file for efficient downstream processing.
+>
 > [Midas Analyser](https://github.com/rjl-climate/midas_analyser) A python toolkit for analysing a MIDAS dataset
 
 ## Table of Contents
@@ -190,7 +192,7 @@ midas_fetcher download --dataset <dataset-name>
 midas_fetcher download \
   --dataset uk-daily-temperature-obs \
   --county devon \
-  --quality v1 \
+  --quality-0 \  # Use QC version 0 (default is version 1)
   --limit 1000
 
 # Performance tuning
