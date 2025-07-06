@@ -3,20 +3,22 @@
 //! This module implements the main command handlers that coordinate between
 //! CLI arguments and the core application functionality.
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use tracing::{debug, error, info, warn};
 
 use crate::app::{
-    CacheConfig, CacheManager, CedaClient, Coordinator, CoordinatorConfig, WorkQueue,
-    collect_datasets_and_years, filter_manifest_files,
+    collect_datasets_and_years, filter_manifest_files, CacheConfig, CacheManager, CedaClient,
+    Coordinator, CoordinatorConfig, ManifestStreamer, Md5Hash, WorkQueue,
 };
 use crate::auth::{setup_credentials, show_auth_status, verify_credentials};
 use crate::cli::{
-    AuthAction, AuthArgs, CacheAction, CacheArgs, DownloadArgs, ManifestAction, ManifestArgs,
-    ProgressConfig, ProgressDisplay, interactive_selection, validate_startup,
+    interactive_selection, validate_startup, AuthAction, AuthArgs, CacheAction, CacheArgs,
+    DownloadArgs, ManifestAction, ManifestArgs, ProgressConfig, ProgressDisplay,
 };
 use crate::errors::{AppError, Result};
 
@@ -569,40 +571,98 @@ async fn handle_manifest_info(file: Option<PathBuf>) -> Result<()> {
         find_manifest_file().await?
     };
 
+    println!("📋 Manifest Information");
+    println!("=======================");
+
     info!("Analyzing manifest file: {}", manifest_path.display());
 
+    // Add spinner for manifest loading
+    use indicatif::{ProgressBar, ProgressStyle};
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap()
+            .tick_strings(&["◐", "◓", "◑", "◒"]),
+    );
+    spinner.set_message("Loading manifest...");
+    spinner.enable_steady_tick(std::time::Duration::from_millis(120));
+
+    let load_start = Instant::now();
     let datasets_map = collect_datasets_and_years(&manifest_path)
         .await
         .map_err(AppError::Manifest)?;
 
-    println!("📋 Manifest Information");
-    println!("=======================");
-    println!("File: {}", manifest_path.display());
-    println!("Datasets found: {}", datasets_map.len());
+    spinner.finish_and_clear();
+    println!(
+        "Loading manifest... ✅ Analyzed {} entries ({}s)",
+        datasets_map.values().map(|d| d.file_count).sum::<usize>(),
+        load_start.elapsed().as_secs()
+    );
     println!();
 
-    for (name, summary) in &datasets_map {
-        println!("📊 Dataset: {}", name);
-        println!("   Files: {}", summary.file_count);
-        println!(
-            "   Versions: {} ({})",
-            summary.versions.len(),
-            if summary.versions.is_empty() {
-                "none".to_string()
-            } else {
-                format!(
-                    "{} - {}",
-                    summary.versions.first().unwrap(),
-                    summary.versions.last().unwrap()
-                )
-            }
-        );
-        println!("   Counties: {}", summary.counties.len());
-        println!("   Quality versions: {:?}", summary.quality_versions);
-        println!();
-    }
+    // Display results as a clean table
+    display_manifest_table(&datasets_map);
 
     Ok(())
+}
+
+/// Display manifest information as a clean table
+fn display_manifest_table(datasets_map: &HashMap<String, crate::app::DatasetSummary>) {
+    if datasets_map.is_empty() {
+        println!("No datasets found in manifest.");
+        return;
+    }
+
+    // Calculate column widths
+    let name_width = datasets_map
+        .keys()
+        .map(|name| name.len())
+        .max()
+        .unwrap_or(12)
+        .max(12); // Minimum width for "Dataset Name"
+
+    let counties_width = 9; // Width for "Counties"
+    let year_range_width = 10; // Width for "Year Range"
+    let files_width = 7; // Width for "Files"
+
+    // Print header
+    println!(
+        "{:<width$} {:>counties_width$} {:>year_range_width$} {:>files_width$}",
+        "Dataset Name",
+        "Counties",
+        "Year Range",
+        "Files",
+        width = name_width,
+        counties_width = counties_width,
+        year_range_width = year_range_width,
+        files_width = files_width
+    );
+
+    // Print separator line
+    println!(
+        "{}",
+        "─".repeat(name_width + counties_width + year_range_width + files_width + 6)
+    );
+
+    // Sort datasets by name for consistent output
+    let mut sorted_datasets: Vec<_> = datasets_map.iter().collect();
+    sorted_datasets.sort_by_key(|(name, _)| *name);
+
+    // Print data rows
+    for (name, summary) in sorted_datasets {
+        println!(
+            "{:<width$} {:>counties_width$} {:>year_range_width$} {:>files_width$}",
+            name,
+            summary.counties.len(),
+            summary.year_range(),
+            summary.file_count,
+            width = name_width,
+            counties_width = counties_width,
+            year_range_width = year_range_width,
+            files_width = files_width
+        );
+    }
 }
 
 /// Handle manifest list command
@@ -699,36 +759,347 @@ pub async fn handle_auth(args: AuthArgs) -> Result<()> {
 /// Handle cache management commands
 pub async fn handle_cache(args: CacheArgs) -> Result<()> {
     match args.action {
-        CacheAction::Verify { fast, dataset } => handle_cache_verify(fast, dataset).await,
+        CacheAction::Verify { dataset } => handle_cache_verify(dataset).await,
         CacheAction::Info => handle_cache_info().await,
         CacheAction::Clean { all, failed_only } => handle_cache_clean(all, failed_only).await,
-        CacheAction::Usage => handle_cache_usage().await,
     }
 }
 
 /// Handle cache verification
-async fn handle_cache_verify(fast: bool, dataset: Option<String>) -> Result<()> {
-    info!("Verifying cache (fast: {}, dataset: {:?})", fast, dataset);
-
-    let cache_config = CacheConfig::default();
-    let cache = CacheManager::new(cache_config).await?;
+async fn handle_cache_verify(dataset: Option<String>) -> Result<()> {
+    info!("Verifying cache integrity (dataset: {:?})", dataset);
 
     println!("🔍 Cache Verification");
     println!("====================");
+    println!();
 
-    if fast {
-        println!("⚡ Fast verification using manifest checksums...");
-        // TODO: Implement fast verification
-    } else {
-        println!("🔄 Full verification (re-downloading samples)...");
-        // TODO: Implement full verification
+    let start_time = Instant::now();
+
+    // Phase 1: Setup cache manager
+    let cache_config = CacheConfig::default();
+    let cache = CacheManager::new(cache_config).await?;
+    let cache_root = cache.cache_root().to_path_buf();
+
+    // Phase 2: Scan cache directory with progress
+    print!("🔍 Scanning cache directory...");
+    io::stdout().flush().unwrap();
+
+    let scan_start = Instant::now();
+    let cached_files = scan_cache_files(&cache_root, dataset.as_deref()).await?;
+
+    println!(
+        " ✅ Found {} cached files ({}s)",
+        cached_files.len(),
+        scan_start.elapsed().as_secs()
+    );
+
+    if cached_files.is_empty() {
+        println!("ℹ️  No cached files found to verify");
+        return Ok(());
     }
 
-    let cache_stats = cache.get_cache_stats().await;
-    println!("Files downloading: {}", cache_stats.downloading_files);
-    println!("Cache size: {} bytes", cache_stats.total_cache_size);
+    // Phase 3: Load manifest with progress
+    use indicatif::{ProgressBar, ProgressStyle};
+    let manifest_spinner = ProgressBar::new_spinner();
+    manifest_spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap()
+            .tick_strings(&["◐", "◓", "◑", "◒"]),
+    );
+    manifest_spinner.set_message("📋 Loading manifest file...");
+    manifest_spinner.enable_steady_tick(std::time::Duration::from_millis(120));
+
+    let manifest_start = Instant::now();
+    let manifest_path = find_manifest_file().await?;
+    let manifest_hashes = load_manifest_hashes(&manifest_path, dataset.as_deref()).await?;
+
+    manifest_spinner.finish_and_clear();
+    println!(
+        "📋 Loading manifest file... ✅ Loaded {} manifest entries ({}s)",
+        manifest_hashes.len(),
+        manifest_start.elapsed().as_secs()
+    );
+
+    // Phase 4: Verify files with progress
+    println!("✅ Verifying file integrity...");
+
+    let verify_start = Instant::now();
+    let results = verify_files_with_progress(&cached_files, &manifest_hashes).await?;
+
+    let verify_duration = verify_start.elapsed();
+    let total_duration = start_time.elapsed();
+
+    // Phase 5: Display results
+    println!();
+    println!("📊 Verification Results");
+    println!("======================");
+    println!("Files verified: {}", results.total_verified);
+    println!("Valid files: {}", results.valid_count);
+    println!("Corrupted files: {}", results.corrupted_count);
+    println!(
+        "Missing from manifest: {}",
+        results.missing_from_manifest_count
+    );
+    println!("Verification time: {}s", verify_duration.as_secs());
+    println!("Total time: {}s", total_duration.as_secs());
+
+    // Show corrupted files if any
+    if !results.corrupted_files.is_empty() {
+        println!();
+        println!("⚠️  Corrupted Files:");
+        for file_path in &results.corrupted_files {
+            println!("  {}", file_path.display());
+        }
+        println!();
+        println!(
+            "💡 These files should be re-downloaded. Run the download command to replace them."
+        );
+    }
+
+    // Show missing files if any
+    if !results.missing_from_manifest_files.is_empty() {
+        println!();
+        println!("❓ Files Not in Manifest:");
+        for file_path in &results.missing_from_manifest_files {
+            println!("  {}", file_path.display());
+        }
+        println!();
+        println!("💡 These files may be from an older manifest or a different dataset.");
+    }
+
+    if results.corrupted_count > 0 || results.missing_from_manifest_count > 0 {
+        println!();
+        if results.corrupted_count > 0 {
+            println!(
+                "❌ Cache verification found {} corrupted files",
+                results.corrupted_count
+            );
+        }
+        if results.missing_from_manifest_count > 0 {
+            println!(
+                "⚠️  Found {} files not in current manifest",
+                results.missing_from_manifest_count
+            );
+        }
+    } else {
+        println!();
+        println!("✅ All cached files verified successfully!");
+    }
 
     Ok(())
+}
+
+/// Results of cache verification
+#[derive(Debug)]
+struct VerificationResults {
+    total_verified: usize,
+    valid_count: usize,
+    corrupted_count: usize,
+    missing_from_manifest_count: usize,
+    corrupted_files: Vec<PathBuf>,
+    missing_from_manifest_files: Vec<PathBuf>,
+}
+
+/// Scan cache directory for files to verify
+async fn scan_cache_files(cache_root: &Path, dataset_filter: Option<&str>) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+
+    // Use the same directory scanning logic as cache info
+    scan_directory_recursive_for_verify(cache_root, &mut files, dataset_filter)?;
+
+    Ok(files)
+}
+
+/// Recursively scan directory for CSV files
+fn scan_directory_recursive_for_verify(
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+    dataset_filter: Option<&str>,
+) -> Result<()> {
+    use std::fs;
+
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()), // Skip inaccessible directories
+    };
+
+    for entry in entries {
+        let entry = entry
+            .map_err(|e| AppError::generic(format!("Failed to read directory entry: {}", e)))?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            // Apply dataset filter if specified
+            if let Some(filter) = dataset_filter {
+                if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+                    if !dir_name.contains(filter) {
+                        continue; // Skip directories not matching dataset filter
+                    }
+                }
+            }
+
+            // Recursively scan subdirectories
+            scan_directory_recursive_for_verify(&path, files, dataset_filter)?;
+        } else if path.extension().and_then(|s| s.to_str()) == Some("csv") {
+            files.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+/// Load manifest and build hash lookup map
+async fn load_manifest_hashes(
+    manifest_path: &Path,
+    dataset_filter: Option<&str>,
+) -> Result<HashMap<PathBuf, Md5Hash>> {
+    use futures::StreamExt;
+
+    let mut manifest_streamer = ManifestStreamer::new();
+    let mut manifest_stream = manifest_streamer
+        .stream(manifest_path)
+        .await
+        .map_err(AppError::Manifest)?;
+
+    let mut hash_map = HashMap::new();
+
+    while let Some(file_info_result) = manifest_stream.next().await {
+        let file_info = file_info_result.map_err(AppError::Manifest)?;
+
+        // Apply dataset filter if specified
+        if let Some(filter) = dataset_filter {
+            if !file_info.dataset_info.dataset_name.contains(filter) {
+                continue;
+            }
+        }
+
+        // Build the expected cache path for this file
+        let cache_path = build_cache_path_from_file_info(&file_info);
+        hash_map.insert(cache_path, file_info.hash);
+    }
+
+    Ok(hash_map)
+}
+
+/// Build expected cache path from file info
+fn build_cache_path_from_file_info(file_info: &crate::app::models::FileInfo) -> PathBuf {
+    // This should match the cache path construction logic in the cache manager
+    // For now, use the file name as a simple approach
+    PathBuf::from(&file_info.file_name)
+}
+
+/// Verify files with progress indication
+async fn verify_files_with_progress(
+    cached_files: &[PathBuf],
+    manifest_hashes: &HashMap<PathBuf, Md5Hash>,
+) -> Result<VerificationResults> {
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    let total_files = cached_files.len();
+    let mut results = VerificationResults {
+        total_verified: 0,
+        valid_count: 0,
+        corrupted_count: 0,
+        missing_from_manifest_count: 0,
+        corrupted_files: Vec::new(),
+        missing_from_manifest_files: Vec::new(),
+    };
+
+    // Create progress bar
+    let progress = ProgressBar::new(total_files as u64);
+    progress.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} (ETA: {eta}) {msg}")
+            .unwrap()
+            .progress_chars("##-"),
+    );
+    progress.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let start_time = Instant::now();
+
+    for (i, file_path) in cached_files.iter().enumerate() {
+        // Update progress every 100 files or on last file
+        if i % 100 == 0 || i == total_files - 1 {
+            progress.set_position(i as u64);
+
+            // Calculate verification rate
+            let elapsed = start_time.elapsed().as_secs_f64();
+            if elapsed > 0.0 {
+                let rate = (i + 1) as f64 / elapsed;
+                progress.set_message(format!("{:.1} files/sec", rate));
+            } else {
+                progress.set_message("Verifying files...");
+            }
+        }
+
+        results.total_verified += 1;
+
+        // Get the file name for manifest lookup
+        let file_name = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| file_path.clone());
+
+        // Check if file exists in manifest
+        let expected_hash = match manifest_hashes.get(&file_name) {
+            Some(hash) => hash,
+            None => {
+                results.missing_from_manifest_count += 1;
+                results.missing_from_manifest_files.push(file_path.clone());
+                continue;
+            }
+        };
+
+        // Calculate actual file hash
+        match calculate_file_md5(file_path).await {
+            Ok(actual_hash) => {
+                if actual_hash == *expected_hash {
+                    results.valid_count += 1;
+                } else {
+                    results.corrupted_count += 1;
+                    results.corrupted_files.push(file_path.clone());
+                }
+            }
+            Err(_) => {
+                // File couldn't be read, consider it corrupted
+                results.corrupted_count += 1;
+                results.corrupted_files.push(file_path.clone());
+            }
+        }
+    }
+
+    progress.finish_with_message("Verification complete");
+
+    Ok(results)
+}
+
+/// Calculate MD5 hash of a file
+async fn calculate_file_md5(file_path: &Path) -> Result<Md5Hash> {
+    use tokio::fs::File;
+    use tokio::io::AsyncReadExt;
+
+    let mut file = File::open(file_path).await.map_err(|e| {
+        AppError::generic(format!(
+            "Failed to open file {}: {}",
+            file_path.display(),
+            e
+        ))
+    })?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).await.map_err(|e| {
+        AppError::generic(format!(
+            "Failed to read file {}: {}",
+            file_path.display(),
+            e
+        ))
+    })?;
+
+    let digest = md5::compute(&buffer);
+    let hash_bytes: [u8; 16] = digest.0;
+
+    Ok(Md5Hash::from_bytes(hash_bytes))
 }
 
 /// Handle cache info display
@@ -741,17 +1112,10 @@ async fn handle_cache_info() -> Result<()> {
     println!("💾 Cache Information");
     println!("===================");
     println!("Location: {}", cache.cache_root().display());
-    println!("Active reservations: {}", stats.active_reservations);
-    println!("Files downloading: {}", stats.downloading_files);
+    println!("Cached files: {}", stats.cached_files_count);
     println!(
-        "Cache size: {} bytes ({:.1} MB)",
-        stats.total_cache_size,
+        "Cache size: {:.1} MB",
         stats.total_cache_size as f64 / (1024.0 * 1024.0)
-    );
-    println!(
-        "Available space: {} bytes ({:.1} MB)",
-        stats.available_space,
-        stats.available_space as f64 / (1024.0 * 1024.0)
     );
 
     Ok(())
@@ -774,31 +1138,6 @@ async fn handle_cache_clean(all: bool, failed_only: bool) -> Result<()> {
     }
 
     println!("💡 Cache cleanup functionality coming soon.");
-
-    Ok(())
-}
-
-/// Handle cache usage display
-async fn handle_cache_usage() -> Result<()> {
-    let cache_config = CacheConfig::default();
-    let cache = CacheManager::new(cache_config).await?;
-
-    let stats = cache.get_cache_stats().await;
-
-    println!("📊 Cache Usage");
-    println!("=============");
-    println!("Downloading: {}", stats.downloading_files);
-    println!(
-        "Size: {:.1} MB",
-        stats.total_cache_size as f64 / (1024.0 * 1024.0)
-    );
-    println!("Reservations: {}", stats.active_reservations);
-    println!(
-        "Available: {:.1} MB",
-        stats.available_space as f64 / (1024.0 * 1024.0)
-    );
-
-    // TODO: Add more detailed usage statistics
 
     Ok(())
 }

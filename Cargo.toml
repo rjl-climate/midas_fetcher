@@ -1,15 +1,25 @@
 [package]
 name = "midas_fetcher"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+rust-version = "1.70"
 default-run = "midas_fetcher"
-description = "A Rust library for downloading weather data from the UK Met Office MIDAS Open dataset"
-authors = ["MIDAS Fetcher Contributors"]
+description = "High-performance concurrent downloader for UK Met Office MIDAS Open weather data with intelligent caching and resumable downloads"
+authors = ["Richard Lyon <richlyon@fastmail.com>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/your-org/midas-fetcher"
+repository = "https://github.com/rjl-climate/midas_fetcher"
+homepage = "https://github.com/rjl-climate/midas_fetcher"
+documentation = "https://docs.rs/midas_fetcher"
 readme = "README.md"
 keywords = ["weather", "climate", "data", "download", "midas"]
-categories = ["science", "command-line-utilities"]
+categories = ["science", "command-line-utilities", "web-programming::http-client"]
+exclude = [
+    "examples/*.png",
+    "TASK.md",
+    "PRPs/*",
+    ".env*",
+    "cache/*"
+]
 
 [dependencies]
 # Core async runtime and networking
@@ -53,6 +63,7 @@ ratatui = "0.25"
 
 # Random data generation for simulation
 rand = "0.8"
+fastrand = "2.0"
 
 # Enhanced time handling
 chrono = { version = "0.4", features = ["serde"] }

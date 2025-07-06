@@ -51,7 +51,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::signal;
-use tokio::sync::{RwLock, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -159,6 +159,10 @@ pub struct Coordinator {
     stats: Arc<RwLock<DownloadStats>>,
     shutdown_tx: Option<broadcast::Sender<()>>,
     worker_pool: Option<WorkerPool>,
+    // Background task handles for proper shutdown
+    cleanup_task: Option<JoinHandle<()>>,
+    periodic_task: Option<JoinHandle<()>>,
+    timeout_monitor: Option<JoinHandle<()>>,
 }
 
 impl Coordinator {
@@ -179,6 +183,9 @@ impl Coordinator {
             stats,
             shutdown_tx: None,
             worker_pool: None,
+            cleanup_task: None,
+            periodic_task: None,
+            timeout_monitor: None,
         }
     }
 
@@ -213,7 +220,7 @@ impl Coordinator {
         }
 
         // Setup signal handling for graceful shutdown
-        let shutdown_signal = self.setup_signal_handling(shutdown_tx.clone());
+        let mut shutdown_signal = self.setup_signal_handling(shutdown_tx.clone());
 
         // Create and start worker pool
         let worker_pool_result = self.create_worker_pool().await;
@@ -266,50 +273,138 @@ impl Coordinator {
             initial_queue_stats.completed_count
         );
 
-        // Start periodic progress logging task
-        let periodic_stats_queue = self.queue.clone();
-        let _periodic_task = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
-            let mut last_completed = 0u64;
+        // Start periodic cleanup task for stale reservations
+        let cleanup_cache = self.cache.clone();
+        let cleanup_queue = self.queue.clone();
+        let cleanup_shutdown_rx = shutdown_tx.subscribe();
+        self.cleanup_task = Some(tokio::spawn(async move {
+            let mut cleanup_interval = tokio::time::interval(Duration::from_secs(120)); // Every 2 minutes
+            let mut shutdown_rx = cleanup_shutdown_rx;
 
             loop {
-                interval.tick().await;
-                let stats = periodic_stats_queue.stats().await;
+                tokio::select! {
+                    _ = cleanup_interval.tick() => {
+                        // Clean up stale cache reservations
+                        if let Ok(cleaned_reservations) = cleanup_cache.cleanup_stale_reservations().await {
+                            if cleaned_reservations > 0 {
+                                info!("Cleaned up {} stale cache reservations", cleaned_reservations);
+                            }
+                        }
 
-                if stats.pending_count > 0 || stats.in_progress_count > 0 {
-                    let completed_since_last = stats.completed_count.saturating_sub(last_completed);
-                    if completed_since_last > 0 {
-                        info!(
-                            "Download progress: {} completed (+{}), {} pending, {} in progress, {} failed",
-                            stats.completed_count,
-                            completed_since_last,
-                            stats.pending_count,
-                            stats.in_progress_count,
-                            stats.failed_count
-                        );
-                    } else {
-                        info!(
-                            "Download progress: pending={}, in_progress={}, completed={}, failed={}",
-                            stats.pending_count,
-                            stats.in_progress_count,
-                            stats.completed_count,
-                            stats.failed_count
-                        );
+                        // Handle work timeouts in queue
+                        let timed_out_work = cleanup_queue.handle_timeouts().await;
+                        if timed_out_work > 0 {
+                            info!("Handled {} timed-out work items", timed_out_work);
+                        }
                     }
-                    last_completed = stats.completed_count;
-                } else {
-                    info!(
-                        "All downloads completed: {} successful, {} failed",
-                        stats.completed_count, stats.failed_count
-                    );
-                    break;
+                    _ = shutdown_rx.recv() => {
+                        break;
+                    }
                 }
             }
-        });
+        }));
 
-        // Wait for completion or shutdown signal
+        // Start periodic progress logging task with reduced frequency to lower queue contention
+        let periodic_stats_queue = self.queue.clone();
+        let periodic_shutdown_rx = shutdown_tx.subscribe();
+        self.periodic_task = Some(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60)); // Reduced from 30s to 60s
+            let mut last_completed = 0u64;
+            let mut shutdown_rx = periodic_shutdown_rx;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let stats = periodic_stats_queue.stats().await;
+
+                        if stats.pending_count > 0 || stats.in_progress_count > 0 {
+                            let completed_since_last = stats.completed_count.saturating_sub(last_completed);
+                            if completed_since_last > 0 {
+                                info!(
+                                    "Download progress: {} completed (+{}), {} pending, {} in progress, {} failed",
+                                    stats.completed_count,
+                                    completed_since_last,
+                                    stats.pending_count,
+                                    stats.in_progress_count,
+                                    stats.failed_count
+                                );
+                            } else {
+                                info!(
+                                    "Download progress: pending={}, in_progress={}, completed={}, failed={}",
+                                    stats.pending_count,
+                                    stats.in_progress_count,
+                                    stats.completed_count,
+                                    stats.failed_count
+                                );
+                            }
+                            last_completed = stats.completed_count;
+                        } else {
+                            info!(
+                                "All downloads completed: {} successful, {} failed",
+                                stats.completed_count, stats.failed_count
+                            );
+                            break;
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        break;
+                    }
+                }
+            }
+        }));
+
+        // Start background timeout monitoring task (non-blocking)
+        let timeout_queue = self.queue.clone();
+        let timeout_shutdown_rx = shutdown_tx.subscribe();
+        self.timeout_monitor = Some(tokio::spawn(async move {
+            let mut last_progress_check = Instant::now();
+            let mut last_completed_count = 0u64;
+            let mut shutdown_rx = timeout_shutdown_rx;
+
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(300)) => {
+                        let debug_stats = timeout_queue.stats().await;
+                        let now = Instant::now();
+
+                        // Calculate progress rate over the last monitoring period
+                        let time_since_last_check = now.duration_since(last_progress_check).as_secs_f64();
+                        let files_completed_since_last = debug_stats.completed_count.saturating_sub(last_completed_count);
+                        let progress_rate = if time_since_last_check > 0.0 {
+                            files_completed_since_last as f64 / time_since_last_check
+                        } else {
+                            0.0
+                        };
+
+                        // Update tracking variables
+                        last_progress_check = now;
+                        last_completed_count = debug_stats.completed_count;
+
+                        if debug_stats.pending_count == 0 && debug_stats.in_progress_count == 0 {
+                            debug!("Timeout monitor: Downloads appear complete");
+                            break; // Exit monitor when work is done
+                        } else {
+                            // Only warn if progress rate is abnormally slow (< 5 files/sec)
+                            if progress_rate < 5.0 {
+                                warn!("Timeout monitor: Download process appears slow - Progress rate: {:.1} files/s", progress_rate);
+                                warn!("Queue diagnostics: pending={}, in_progress={}, completed={}, failed={}",
+                                       debug_stats.pending_count, debug_stats.in_progress_count,
+                                       debug_stats.completed_count, debug_stats.failed_count);
+                            } else {
+                                debug!("Timeout monitor: Download progressing normally at {:.1} files/s", progress_rate);
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        break;
+                    }
+                }
+            }
+        }));
+
+        // Wait for completion or shutdown signal (no timeout race condition)
         let completion_result = tokio::select! {
-            _ = shutdown_signal => {
+            _ = &mut shutdown_signal => {
                 info!("Shutdown signal received, initiating graceful shutdown");
                 self.handle_shutdown().await
             }
@@ -317,23 +412,42 @@ impl Coordinator {
                 info!("All downloads completed naturally");
                 self.handle_completion().await
             }
-            _ = tokio::time::sleep(Duration::from_secs(300)) => {
-                warn!("Download process running longer than expected - checking status");
-                let debug_stats = self.queue.stats().await;
-
-                if debug_stats.pending_count == 0 && debug_stats.in_progress_count == 0 {
-                    info!("Downloads completed during timeout check");
-                    self.handle_completion().await
-                } else {
-                    error!("Download process appears hung - Queue diagnostics: pending={}, in_progress={}, completed={}, failed={}",
-                           debug_stats.pending_count, debug_stats.in_progress_count,
-                           debug_stats.completed_count, debug_stats.failed_count);
-
-                    warn!("Forcing emergency completion due to extended timeout");
-                    self.handle_emergency_completion().await
-                }
-            }
         };
+
+        debug!("Initiating background task shutdown");
+
+        // Send shutdown signals to all background tasks when completion is detected
+        if let Some(tx) = &self.shutdown_tx {
+            let _ = tx.send(());
+        }
+
+        // Wait for background tasks to finish with timeout
+        if let Some(cleanup_task) = self.cleanup_task.take() {
+            if tokio::time::timeout(Duration::from_secs(5), cleanup_task)
+                .await
+                .is_err()
+            {
+                warn!("Cleanup task shutdown timed out after 5 seconds");
+            }
+        }
+
+        if let Some(periodic_task) = self.periodic_task.take() {
+            if tokio::time::timeout(Duration::from_secs(5), periodic_task)
+                .await
+                .is_err()
+            {
+                warn!("Periodic task shutdown timed out after 5 seconds");
+            }
+        }
+
+        if let Some(timeout_monitor) = self.timeout_monitor.take() {
+            if tokio::time::timeout(Duration::from_secs(5), timeout_monitor)
+                .await
+                .is_err()
+            {
+                warn!("Timeout monitor shutdown timed out after 5 seconds");
+            }
+        }
 
         // Wait for progress monitor to finish
         let _ = progress_monitor.await;
@@ -342,7 +456,10 @@ impl Coordinator {
         let shutdown_errors = if let Some(pool) = self.worker_pool.take() {
             match tokio::time::timeout(self.config.shutdown_timeout, pool.shutdown()).await {
                 Ok(Ok(())) => Vec::new(),
-                Ok(Err(e)) => vec![format!("Worker pool shutdown error: {}", e)],
+                Ok(Err(e)) => {
+                    warn!("Worker pool shutdown error: {}", e);
+                    vec![format!("Worker pool shutdown error: {}", e)]
+                }
                 Err(_) => {
                     warn!(
                         "Worker pool shutdown timed out after {:?}",
@@ -371,7 +488,6 @@ impl Coordinator {
             "Final stats: {} completed, {} failed, {} total",
             final_stats.files_completed, final_stats.files_failed, final_stats.total_files
         );
-
         Ok(SessionResult {
             stats: final_stats,
             success: completion_result.is_ok(),
@@ -509,8 +625,9 @@ impl Coordinator {
                         break;
                     }
                     _ = tokio::time::sleep(update_interval) => {
-                        // Periodic statistics update
+                        // Periodic statistics update with reduced frequency during high contention
                         if last_update.elapsed() >= update_interval {
+                            // Use cached stats when available to reduce queue lock pressure
                             let queue_stats = queue.stats().await;
                             let mut stats_guard = stats.write().await;
 
@@ -550,8 +667,21 @@ impl Coordinator {
 
     /// Wait for all downloads to complete naturally
     async fn wait_for_completion(&self) {
+        debug!("Starting completion detection");
         let mut iteration_count = 0;
+        let expected_total_files = {
+            let stats = self.stats.read().await;
+            stats.total_files as u64
+        };
+
         loop {
+            // Force cleanup of any stale queue state before checking completion
+            if iteration_count % 50 == 0 {
+                // Every 5 seconds
+                let _cleaned = self.queue.cleanup().await;
+                let _timed_out = self.queue.handle_timeouts().await;
+            }
+
             let queue_stats = self.queue.stats().await;
             iteration_count += 1;
 
@@ -567,29 +697,71 @@ impl Coordinator {
                 );
             }
 
-            // Check if all work is done
-            if queue_stats.pending_count == 0 && queue_stats.in_progress_count == 0 {
+            // Enhanced completion detection: use multiple criteria
+            let total_processed = queue_stats.completed_count + queue_stats.abandoned_count;
+            let strict_queue_empty =
+                queue_stats.pending_count == 0 && queue_stats.in_progress_count == 0;
+            let all_files_processed = total_processed >= expected_total_files;
+
+            // Log completion checks periodically
+            if iteration_count % 600 == 0 {
+                // Every minute
+                debug!(
+                    "Completion check {}: pending={}, in_progress={}, completed={}, total_processed={}/{}",
+                    iteration_count,
+                    queue_stats.pending_count,
+                    queue_stats.in_progress_count,
+                    queue_stats.completed_count,
+                    total_processed,
+                    expected_total_files
+                );
+            }
+
+            // Check if all work is done using enhanced logic
+            if strict_queue_empty || all_files_processed {
+                // If we completed by file count but queue isn't empty, log diagnostics
+                if all_files_processed && !strict_queue_empty {
+                    warn!(
+                        "All files processed ({}/{}) but queue not empty: pending={}, in_progress={}",
+                        total_processed,
+                        expected_total_files,
+                        queue_stats.pending_count,
+                        queue_stats.in_progress_count
+                    );
+
+                    // Force final cleanup to sync queue state
+                    let cleaned = self.queue.cleanup().await;
+                    let timed_out = self.queue.handle_timeouts().await;
+
+                    if cleaned > 0 || timed_out > 0 {
+                        info!(
+                            "Final cleanup: removed {} completed items, {} timed out items",
+                            cleaned, timed_out
+                        );
+                    }
+                }
+
                 info!(
-                    "All downloads completed: {} successful, {} failed",
-                    queue_stats.completed_count, queue_stats.failed_count
+                    "All downloads completed: {} successful, {} failed, {} abandoned",
+                    queue_stats.completed_count,
+                    queue_stats.failed_count,
+                    queue_stats.abandoned_count
                 );
                 break;
             }
 
-            // Log more detailed info on the first few iterations to help debug hanging
-            if iteration_count <= 10 {
-                debug!(
-                    "Wait iteration {}: pending={}, in_progress={}, completed={}",
-                    iteration_count,
-                    queue_stats.pending_count,
-                    queue_stats.in_progress_count,
-                    queue_stats.completed_count
-                );
+            // Safety mechanism: prevent infinite loops
+            if iteration_count > 6000 {
+                // 10 minutes at 100ms intervals
+                error!("Completion detection timeout after 10 minutes - forcing exit");
+                break;
             }
 
             // Brief sleep to avoid busy waiting
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+
+        debug!("Completion detection finished");
     }
 
     /// Handle graceful shutdown
@@ -632,40 +804,6 @@ impl Coordinator {
                 .to_std()
                 .unwrap_or(Duration::ZERO);
         }
-
-        Ok(())
-    }
-
-    /// Handle emergency completion when system appears hung
-    async fn handle_emergency_completion(&mut self) -> DownloadResult<()> {
-        error!("Handling emergency completion due to system hang");
-
-        // Force shutdown signal
-        if let Some(tx) = &self.shutdown_tx {
-            let _ = tx.send(());
-        }
-
-        // Update statistics with current state
-        let queue_stats = self.queue.stats().await;
-        {
-            let mut stats = self.stats.write().await;
-            stats.files_completed = queue_stats.completed_count as usize;
-            stats.files_failed = queue_stats.failed_count as usize
-                + queue_stats.pending_count as usize
-                + queue_stats.in_progress_count as usize;
-            stats.files_in_progress = 0;
-            stats.active_workers = 0;
-            stats.session_duration = stats
-                .session_start
-                .signed_duration_since(Utc::now())
-                .to_std()
-                .unwrap_or(Duration::ZERO);
-        }
-
-        warn!(
-            "Emergency completion: marked {} files as failed due to system hang",
-            queue_stats.pending_count + queue_stats.in_progress_count
-        );
 
         Ok(())
     }

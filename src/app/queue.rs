@@ -477,7 +477,17 @@ impl WorkQueue {
     ///
     /// `Some(WorkInfo)` if work is available, `None` if queue is empty
     pub async fn get_next_work(&self) -> Option<WorkInfo> {
+        let lock_start = std::time::Instant::now();
         let mut state = self.state.lock().await;
+        let lock_duration = lock_start.elapsed();
+
+        // Log if lock contention is high (> 10ms)
+        if lock_duration > Duration::from_millis(10) {
+            debug!(
+                "Queue lock contention detected: {:?} wait time",
+                lock_duration
+            );
+        }
 
         // First, try to find pending work
         while let Some(work_id) = state.pop_pending() {
@@ -513,7 +523,12 @@ impl WorkQueue {
                     work_info_mut.status = claimed_work.status.clone();
                 }
 
-                debug!("Claimed work {} for worker {}", work_id, worker_id);
+                debug!(
+                    "Claimed work {} for worker {} (lock held for {:?})",
+                    work_id,
+                    worker_id,
+                    lock_start.elapsed()
+                );
 
                 // Update statistics
                 state.update_stats();
@@ -572,7 +587,12 @@ impl WorkQueue {
                     work_info_mut.status = claimed_work.status.clone();
                 }
 
-                debug!("Claimed retry work {} for worker {}", work_id, worker_id);
+                debug!(
+                    "Claimed retry work {} for worker {} (lock held for {:?})",
+                    work_id,
+                    worker_id,
+                    lock_start.elapsed()
+                );
 
                 // Update statistics
                 state.update_stats();
@@ -585,6 +605,10 @@ impl WorkQueue {
         }
 
         // No work available
+        let total_lock_time = lock_start.elapsed();
+        if total_lock_time > Duration::from_millis(5) {
+            debug!("No work found after {:?} lock time", total_lock_time);
+        }
         None
     }
 

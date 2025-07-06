@@ -195,12 +195,8 @@ pub struct CacheArgs {
 /// Cache management actions
 #[derive(Subcommand, Debug)]
 pub enum CacheAction {
-    /// Verify cache integrity
+    /// Verify cache integrity by checking file hashes against manifest
     Verify {
-        /// Fast verification using manifest only
-        #[arg(short, long)]
-        fast: bool,
-
         /// Specific dataset to verify
         #[arg(short, long)]
         dataset: Option<String>,
@@ -219,9 +215,6 @@ pub enum CacheAction {
         #[arg(long)]
         failed_only: bool,
     },
-
-    /// Show cache size and usage
-    Usage,
 }
 
 impl Cli {

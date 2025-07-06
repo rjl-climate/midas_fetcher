@@ -1,8 +1,21 @@
-//! MIDAS Fetcher Library
+//! # MIDAS Fetcher
 //!
-//! A Rust library for downloading weather data from the UK Met Office MIDAS Open dataset.
-//! Provides efficient, concurrent downloading with proper rate limiting, atomic file operations,
-//! and comprehensive error handling designed for both CLI and GUI applications.
+//! **High-performance concurrent downloader for UK Met Office MIDAS Open weather data**
+//!
+//! MIDAS Fetcher is a Rust library and command-line tool designed to efficiently download
+//! large volumes of historical weather data from the UK Met Office MIDAS Open Archive.
+//! Built for climate researchers and data scientists who need reliable, fast, and resumable
+//! downloads while respecting CEDA's infrastructure.
+//!
+//! ## Features
+//!
+//! - 🚀 **Concurrent Downloads**: Work-stealing queue prevents worker starvation
+//! - 📦 **Intelligent Caching**: Hierarchical organization with deduplication and verification
+//! - ✅ **Data Integrity**: Atomic file operations with MD5 verification  
+//! - 🔄 **Resumable Downloads**: Continues from exactly where interrupted
+//! - 📊 **Real-time Progress**: ETA calculations and comprehensive status reporting
+//! - 🛡️ **CEDA-Respectful**: Built-in rate limiting and exponential backoff
+//! - 🎯 **Selective Downloads**: Filter by dataset, county, station, or time period
 //!
 //! This library is specifically designed to support both command-line usage and future
 //! integration with Tauri-based GUI applications, providing a clean separation between
@@ -166,6 +179,9 @@ pub use errors::{AppError, Result};
 
 // Re-export key app functionality for direct access
 pub use app::{
+    collect_all_files,
+    collect_datasets_and_years,
+    filter_manifest_files,
     // Core components
     CacheConfig,
     CacheManager,
@@ -194,14 +210,11 @@ pub use app::{
     WorkQueueConfig,
 
     WorkerConfig,
-    collect_all_files,
-    collect_datasets_and_years,
-    filter_manifest_files,
 };
 
 // Re-export authentication functionality
 pub use auth::{
-    AuthStatus, check_credentials, get_auth_status, setup_credentials, verify_credentials,
+    check_credentials, get_auth_status, setup_credentials, verify_credentials, AuthStatus,
 };
 
 // Re-export commonly used constants (but not internal implementation details)
@@ -224,9 +237,9 @@ mod tests {
 
     #[test]
     fn test_version_info() {
-        assert!(!VERSION.is_empty());
         assert_eq!(NAME, "midas_fetcher");
-        assert!(!DESCRIPTION.is_empty());
+        assert!(VERSION.contains('.'), "Version should be in semver format");
+        assert!(DESCRIPTION.len() > 10, "Description should be meaningful");
     }
 
     #[test]

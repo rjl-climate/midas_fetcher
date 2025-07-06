@@ -105,7 +105,7 @@ impl Default for CacheConfig {
             cache_root: None,  // Will use OS-specific cache directory
             max_cache_size: 0, // Unlimited
             fast_verification: cache::FAST_VERIFICATION,
-            reservation_timeout: Duration::from_secs(300), // 5 minutes
+            reservation_timeout: Duration::from_secs(180), // 3 minutes (shorter than work timeout)
             auto_cleanup: false,
             min_free_space: 1024 * 1024 * 1024, // 1 GB
         }
@@ -636,14 +636,84 @@ impl CacheManager {
             .filter(|r| matches!(r.status, ReservationState::Downloading))
             .count();
 
+        // Scan cache directory for actual files and sizes
+        let (cached_files_count, total_cache_size) = self.scan_cache_directory().await;
+        let available_space = self.get_available_disk_space().await;
+
         CacheStats {
             cache_root: self.cache_root.clone(),
             active_reservations,
             downloading_files: downloading,
-            // TODO: Calculate actual cache size
-            total_cache_size: 0,
-            available_space: 0,
+            cached_files_count,
+            total_cache_size,
+            available_space,
         }
+    }
+
+    /// Scan cache directory to count files and calculate total size
+    async fn scan_cache_directory(&self) -> (usize, u64) {
+        // Run the directory scanning in a blocking task to avoid blocking the async runtime
+        let cache_root = self.cache_root.clone();
+
+        tokio::task::spawn_blocking(move || Self::scan_directory_recursive(&cache_root))
+            .await
+            .unwrap_or_else(|e| {
+                warn!("Failed to scan cache directory: {}", e);
+                (0, 0)
+            })
+    }
+
+    /// Recursively scan a directory for cached files
+    fn scan_directory_recursive(dir: &Path) -> (usize, u64) {
+        let mut file_count = 0;
+        let mut total_size = 0u64;
+
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+
+                if path.is_dir() {
+                    // Recursively scan subdirectories
+                    let (sub_count, sub_size) = Self::scan_directory_recursive(&path);
+                    file_count += sub_count;
+                    total_size += sub_size;
+                } else if path.is_file() {
+                    // Count files that end with .csv (MIDAS data files)
+                    if let Some(extension) = path.extension() {
+                        if extension == "csv" {
+                            file_count += 1;
+
+                            // Get file size
+                            if let Ok(metadata) = entry.metadata() {
+                                total_size += metadata.len();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (file_count, total_size)
+    }
+
+    /// Get available disk space
+    async fn get_available_disk_space(&self) -> u64 {
+        let cache_root = self.cache_root.clone();
+
+        tokio::task::spawn_blocking(move || Self::get_disk_space(&cache_root))
+            .await
+            .unwrap_or_else(|e| {
+                warn!("Failed to get available disk space: {}", e);
+                0
+            })
+    }
+
+    /// Get available disk space for a given path
+    fn get_disk_space(_path: &Path) -> u64 {
+        // For now, return a placeholder value until we add proper dependencies
+        // TODO: Add libc dependency for Unix and winapi for Windows
+        // This will be implemented in a future iteration
+        0
     }
 
     /// Clean up stale reservations
@@ -672,9 +742,11 @@ pub struct CacheStats {
     pub active_reservations: usize,
     /// Number of files currently being downloaded
     pub downloading_files: usize,
-    /// Total size of cached files
+    /// Number of files actually cached on disk
+    pub cached_files_count: usize,
+    /// Total size of cached files in bytes
     pub total_cache_size: u64,
-    /// Available disk space
+    /// Available disk space in bytes
     pub available_space: u64,
 }
 

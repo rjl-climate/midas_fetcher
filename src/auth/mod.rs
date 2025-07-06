@@ -22,8 +22,8 @@ pub mod credentials;
 
 // Re-export main public API
 pub use credentials::{
-    AuthStatus, check_credentials, ensure_authenticated, get_auth_status, prompt_credentials,
-    save_credentials, setup_credentials, show_auth_status, verify_credentials,
+    check_credentials, ensure_authenticated, get_auth_status, prompt_credentials, save_credentials,
+    setup_credentials, show_auth_status, verify_credentials, AuthStatus,
 };
 
 #[cfg(test)]

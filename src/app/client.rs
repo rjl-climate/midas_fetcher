@@ -8,7 +8,7 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::time::Duration;
 
-use governor::{Jitter, Quota, RateLimiter, clock::DefaultClock, state::InMemoryState};
+use governor::{clock::DefaultClock, state::InMemoryState, Jitter, Quota, RateLimiter};
 use reqwest::Client;
 use scraper::{Html, Selector};
 use tokio::fs::File;

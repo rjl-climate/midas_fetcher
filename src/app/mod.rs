@@ -70,11 +70,11 @@ pub use client::{CedaClient, ClientConfig};
 pub use coordinator::{Coordinator, CoordinatorConfig, DownloadStats, SessionResult};
 pub use hash::Md5Hash;
 pub use manifest::{
-    DatasetSummary, ManifestConfig, ManifestStats, ManifestStreamer, collect_all_files,
-    collect_datasets_and_years, filter_manifest_files, get_selection_options, validate_manifest,
+    collect_all_files, collect_datasets_and_years, filter_manifest_files, get_selection_options,
+    validate_manifest, DatasetSummary, ManifestConfig, ManifestStats, ManifestStreamer,
 };
 pub use models::{
-    DatasetFileInfo, FileInfo, QualityControlVersion, generate_file_id, parse_manifest_line,
+    generate_file_id, parse_manifest_line, DatasetFileInfo, FileInfo, QualityControlVersion,
 };
 pub use queue::{QueueStats, WorkInfo, WorkQueue, WorkQueueConfig, WorkStatus};
 pub use worker::{

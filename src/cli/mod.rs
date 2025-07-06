@@ -14,4 +14,4 @@ pub use args::{
 };
 pub use commands::{handle_auth, handle_cache, handle_download, handle_manifest};
 pub use progress::{ProgressConfig, ProgressDisplay, ProgressEvent};
-pub use startup::{StartupStatus, interactive_selection, show_startup_status, validate_startup};
+pub use startup::{interactive_selection, show_startup_status, validate_startup, StartupStatus};

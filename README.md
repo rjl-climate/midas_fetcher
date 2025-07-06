@@ -6,7 +6,12 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](#development)
 
-A sophisticated command-line tool and Rust library designed to efficiently download large volumes of historical weather data from the UK Met Office MIDAS Open Archive. Built for climate researchers and data scientists who need reliable, fast, and resumable downloads while respecting CEDA's infrastructure.
+A command-line tool and Rust library designed to efficiently download large volumes of historical weather data from the UK Met Office MIDAS Open Archive. Built for climate researchers and data scientists who need reliable, fast, and resumable downloads while respecting CEDA's infrastructure.
+
+> **NOTE**
+> There are two companion apps that build on this tool.
+> [Midas Processor](https://github.com/rjl-climate/midas_processor): A rust app to convert the MIDAS dataset downloaded by this tool into a .parquet file for efficient downstream processing.
+> [Midas Analyser](https://github.com/rjl-climate/midas_analyser) A python toolkit for analysing a MIDAS dataset
 
 ## Table of Contents
 
@@ -67,19 +72,19 @@ CEDA currently provides **no specialized tools** for bulk downloading MIDAS Open
 MIDAS Fetcher solves these problems through intelligent automation and sophisticated technical architecture:
 
 ### Core Capabilities
-- 🚀 **Concurrent Downloads**: Advanced work-stealing architecture preventing worker starvation
-- ✅ **Data Integrity**: Atomic file operations with MD5 verification and automatic corruption detection
+- 🔍 **Dataset Discovery**: Automatic manifest parsing and interactive dataset selection
+- 🎯 **Selective Downloads**: Filter by dataset, county, station, quality version, or time period
+- 🚀 **Concurrent Downloads**: It's fast
 - 📦 **Intelligent Caching**: Hierarchical organization with deduplication and fast verification
+- ✅ **Data Integrity**: Atomic file operations with MD5 verification and cache integrity checking
 - 🔄 **Resumable Downloads**: Continues from exactly where interrupted, no wasted bandwidth
 - 📊 **Real-time Progress**: ETA calculations, download rates, and comprehensive status reporting
 - 🛡️ **CEDA-Respectful**: Built-in rate limiting, exponential backoff, and circuit breakers
-- 🔍 **Dataset Discovery**: Automatic manifest parsing and interactive dataset selection
-- 🎯 **Selective Downloads**: Filter by dataset, county, station, quality version, or time period
 
 ### Key Benefits
 - **Performance**: 3-4x faster than manual approaches with linear scaling
 - **Reliability**: Zero data corruption through atomic operations
-- **Efficiency**: Sub-second cache verification vs 20+ minute manual checking
+- **Efficiency**: Fast cache verification with progress tracking and corruption detection
 - **Usability**: Simple commands for complex operations
 - **Respectful**: Protects CEDA infrastructure while maximizing legitimate throughput
 
@@ -113,7 +118,7 @@ rustup default stable
 ### Build from Source
 
 ```bash
-git clone https://github.com/your-org/midas_fetcher.git
+git clone https://github.com/rjl-climate/midas_fetcher.git
 cd midas_fetcher
 cargo build --release
 ```
@@ -164,11 +169,11 @@ midas_fetcher download --dataset uk-daily-temperature-obs --dry-run
 
 ### 4. Verify Downloads
 ```bash
-# Fast manifest-based verification
-midas_fetcher cache verify --fast
-
-# Full re-download verification
+# Verify cache integrity by checking file hashes against manifest
 midas_fetcher cache verify
+
+# Verify specific dataset only
+midas_fetcher cache verify --dataset uk-daily-temperature-obs
 
 # Check cache information
 midas_fetcher cache info
@@ -214,11 +219,10 @@ midas_fetcher manifest list --datasets-only  # Just dataset names
 
 ### Cache Commands
 ```bash
-midas_fetcher cache verify --fast   # Quick verification using manifest
-midas_fetcher cache verify          # Full verification by re-downloading samples
-midas_fetcher cache info            # Cache statistics and location
-midas_fetcher cache clean           # Remove temporary and failed files
-midas_fetcher cache usage           # Detailed space usage
+midas_fetcher cache verify                    # Verify cache integrity by checking file hashes
+midas_fetcher cache verify --dataset <name>   # Verify specific dataset only
+midas_fetcher cache info                      # Cache statistics, location, and file counts
+midas_fetcher cache clean                     # Remove temporary and failed files
 ```
 
 ### Global Options
@@ -231,7 +235,7 @@ midas_fetcher cache usage           # Detailed space usage
 
 ## Technical Architecture
 
-MIDAS Fetcher uses a sophisticated concurrent architecture designed for efficiency, reliability, and respectful server interaction:
+MIDAS Fetcher uses a concurrent architecture designed for efficiency, reliability, and respectful server interaction:
 
 ### Distributed Consensus at the Filesystem Level
 
@@ -264,7 +268,7 @@ The cache system ensures data integrity through multiple layers:
 - **Atomic operations**: Temp file + rename pattern prevents corruption
 - **MD5 verification**: Automatic verification against manifest checksums
 - **Deduplication**: Hash-based detection prevents duplicate downloads
-- **Fast verification**: Sub-second manifest-based cache checking
+- **Integrity verification**: MD5 hash checking against manifest with progress reporting
 
 ### Work-Stealing Architecture
 
@@ -318,7 +322,7 @@ The HTTP client implements multiple layers of protection for CEDA's infrastructu
 
 | Operation | Manual Approach | MIDAS Fetcher | Improvement |
 |-----------|----------------|---------------|-------------|
-| Cache verification | 20+ minutes | <1 second | 1200x faster |
+| Cache verification | Manual file checking | Automated MD5 verification | Corruption detection |
 | 1000 file download | 45-60 minutes | 15-20 minutes | 3x faster |
 | Worker utilization | 25-50% (starvation) | 95%+ | 2-4x efficiency |
 | Memory usage | Unbounded growth | Constant (bounded) | Stable |
@@ -362,7 +366,7 @@ Contributions are welcome! This tool aims to serve the UK climate research commu
 
 ### Development Setup
 ```bash
-git clone https://github.com/your-org/midas_fetcher.git
+git clone https://github.com/rjl-climate/midas_fetcher.git
 cd midas_fetcher
 
 # Run all tests
@@ -440,7 +444,7 @@ You may choose either license for your use.
 - [x] Download 1000+ files concurrently without server errors
 - [x] Linear performance scaling with worker count (no starvation)
 - [x] Graceful interruption handling with resumable downloads
-- [x] Sub-second cache verification using manifest checksums
+- [x] Cache verification with MD5 hash checking and progress reporting
 - [x] Zero data corruption through atomic file operations
 - [x] All tests passing with comprehensive quality checks
 

@@ -14,7 +14,7 @@ use tokio::io::{AsyncBufReadExt, BufReader, Lines};
 use tracing::{debug, error, info, warn};
 
 use crate::app::hash::Md5Hash;
-use crate::app::models::{FileInfo, parse_manifest_line};
+use crate::app::models::{parse_manifest_line, FileInfo};
 use crate::constants::workers;
 use crate::errors::{ManifestError, ManifestResult};
 
@@ -901,6 +901,8 @@ pub struct DatasetSummary {
     pub counties: Vec<String>,
     /// Available quality control versions
     pub quality_versions: Vec<crate::app::models::QualityControlVersion>,
+    /// Individual data years found in files (e.g., ["1980", "1981", "2023"])
+    pub years: Vec<String>,
     /// Total number of files for this dataset
     pub file_count: usize,
     /// Example file for reference
@@ -936,6 +938,32 @@ impl DatasetSummary {
     /// Check if a specific quality version is available
     pub fn has_quality_version(&self, qv: &crate::app::models::QualityControlVersion) -> bool {
         self.quality_versions.contains(qv)
+    }
+
+    /// Get the earliest available data year
+    pub fn earliest_year(&self) -> Option<&String> {
+        self.years.iter().min()
+    }
+
+    /// Get the latest available data year
+    pub fn latest_data_year(&self) -> Option<&String> {
+        self.years.iter().max()
+    }
+
+    /// Format the year range as a string (e.g., "1980-2023" or "1980" if single year)
+    pub fn year_range(&self) -> String {
+        if self.years.is_empty() {
+            return "N/A".to_string();
+        }
+
+        let earliest = self.earliest_year().unwrap();
+        let latest = self.latest_data_year().unwrap();
+
+        if earliest == latest {
+            earliest.clone()
+        } else {
+            format!("{}-{}", earliest, latest)
+        }
     }
 }
 
@@ -981,6 +1009,7 @@ pub async fn collect_datasets_and_years<P: AsRef<Path>>(
                 versions: Vec::new(),
                 counties: Vec::new(),
                 quality_versions: Vec::new(),
+                years: Vec::new(),
                 file_count: 0,
                 example_file: None,
             });
@@ -1012,12 +1041,20 @@ pub async fn collect_datasets_and_years<P: AsRef<Path>>(
                 entry.quality_versions.push(qv.clone());
             }
         }
+
+        // Collect individual data years (skip capability files that don't have years)
+        if let Some(ref year) = dataset_info.year {
+            if !entry.years.contains(year) {
+                entry.years.push(year.clone());
+            }
+        }
     }
 
     // Sort collected data for consistent output
     for summary in datasets.values_mut() {
         summary.versions.sort();
         summary.counties.sort();
+        summary.years.sort();
         summary.quality_versions.sort_by_key(|qv| match qv {
             crate::app::models::QualityControlVersion::V0 => 0,
             crate::app::models::QualityControlVersion::V1 => 1,

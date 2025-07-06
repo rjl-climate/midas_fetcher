@@ -11,13 +11,12 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use crossterm::{
-    ExecutableCommand,
     event::{self, Event, KeyCode, KeyEventKind},
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    ExecutableCommand,
 };
 use rand::prelude::*;
 use ratatui::{
-    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -25,9 +24,10 @@ use ratatui::{
     widgets::{
         Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, Paragraph, Row, Table,
     },
+    Frame, Terminal,
 };
 use tempfile::TempDir;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, sleep};
 use tracing::{debug, info, warn};
 
@@ -625,14 +625,12 @@ fn render_performance_chart(f: &mut Frame, app_state: &AppState, area: Rect) {
         app_state.performance_history.clone()
     };
 
-    let datasets = vec![
-        Dataset::default()
-            .name("Throughput")
-            .marker(symbols::Marker::Dot)
-            .style(Style::default().fg(Color::Green))
-            .graph_type(GraphType::Line)
-            .data(&chart_data),
-    ];
+    let datasets = vec![Dataset::default()
+        .name("Throughput")
+        .marker(symbols::Marker::Dot)
+        .style(Style::default().fg(Color::Green))
+        .graph_type(GraphType::Line)
+        .data(&chart_data)];
 
     // Calculate dynamic bounds
     let max_time = chart_data.iter().map(|(t, _)| *t).fold(60.0, f64::max);

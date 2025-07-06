@@ -51,7 +51,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -92,7 +92,7 @@ impl Default for WorkerConfig {
             retry_max_delay: Duration::from_secs(30),
             idle_sleep_duration: Duration::from_millis(100),
             progress_buffer_size: workers::CHANNEL_BUFFER_SIZE,
-            download_timeout: Duration::from_secs(300), // 5 minutes
+            download_timeout: Duration::from_secs(600), // 10 minutes (increased from 5)
             detailed_progress: true,
         }
     }
@@ -192,6 +192,8 @@ struct WorkerStats {
     current_download_start: Option<Instant>,
     current_bytes_downloaded: u64,
     speed_samples: Vec<(Instant, u64)>, // (timestamp, bytes) for speed calculation
+    consecutive_empty_polls: u32,       // Track consecutive times we found no work
+    last_empty_poll: Option<Instant>,
 }
 
 impl DownloadWorker {
@@ -238,9 +240,41 @@ impl DownloadWorker {
             match self.worker_iteration().await {
                 Ok(work_found) => {
                     if !work_found {
-                        // No work available, sleep briefly
+                        // No work available, use exponential backoff to reduce contention
                         self.report_progress(WorkerStatus::Idle, None).await;
-                        tokio::time::sleep(self.config.idle_sleep_duration).await;
+
+                        // Track consecutive empty polls for backoff calculation
+                        self.stats.consecutive_empty_polls += 1;
+                        self.stats.last_empty_poll = Some(Instant::now());
+
+                        // Exponential backoff: start with base duration, double up to max
+                        let backoff_multiplier =
+                            std::cmp::min(self.stats.consecutive_empty_polls, 6); // Cap at 6 (2^6 = 64x)
+                        let base_sleep = self.config.idle_sleep_duration.as_millis() as u64;
+                        let exponential_sleep = base_sleep * (1u64 << backoff_multiplier); // 2^n backoff
+                        let capped_sleep = std::cmp::min(exponential_sleep, 2000); // Cap at 2 seconds
+
+                        // Add jitter to prevent thundering herd (±25%)
+                        let jitter_range = capped_sleep / 4;
+                        let jitter =
+                            fastrand::u64(0..=jitter_range * 2).saturating_sub(jitter_range);
+                        let final_sleep = capped_sleep.saturating_add(jitter);
+
+                        let sleep_duration = Duration::from_millis(final_sleep);
+                        debug!(
+                            "Worker {} idle (attempt {}), sleeping for {:?}",
+                            self.id, self.stats.consecutive_empty_polls, sleep_duration
+                        );
+                        tokio::time::sleep(sleep_duration).await;
+                    } else {
+                        // Found work, reset backoff counter
+                        if self.stats.consecutive_empty_polls > 0 {
+                            debug!(
+                                "Worker {} found work after {} empty polls",
+                                self.id, self.stats.consecutive_empty_polls
+                            );
+                            self.stats.consecutive_empty_polls = 0;
+                        }
                     }
                 }
                 Err(e) => {
@@ -268,9 +302,28 @@ impl DownloadWorker {
         self.report_progress(WorkerStatus::RequestingWork, None)
             .await;
 
+        let work_request_start = std::time::Instant::now();
         let work_info = match self.queue.get_next_work().await {
-            Some(work) => work,
-            None => return Ok(false), // No work available
+            Some(work) => {
+                let queue_wait_time = work_request_start.elapsed();
+                if queue_wait_time > std::time::Duration::from_millis(50) {
+                    debug!(
+                        "Worker {} waited {:?} for work from queue",
+                        self.id, queue_wait_time
+                    );
+                }
+                work
+            }
+            None => {
+                let queue_wait_time = work_request_start.elapsed();
+                if queue_wait_time > std::time::Duration::from_millis(10) {
+                    debug!(
+                        "Worker {} found no work after {:?} queue wait",
+                        self.id, queue_wait_time
+                    );
+                }
+                return Ok(false); // No work available
+            }
         };
 
         let file_info = work_info.file_info;
@@ -291,7 +344,7 @@ impl DownloadWorker {
             }
             Ok(ReservationStatus::ReservedByOther { worker_id }) => {
                 debug!(
-                    "Worker {} found file reserved by worker {}: {}",
+                    "Worker {} found file reserved by worker {}: {} - immediately seeking new work",
                     self.id, worker_id, file_info.file_name
                 );
                 // Immediately seek new work - don't wait for this file

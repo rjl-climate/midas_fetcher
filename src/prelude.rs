@@ -27,6 +27,10 @@ pub use crate::errors::{AppError, Result};
 
 // Essential app components that are used in most integrations
 pub use crate::app::{
+    // Manifest functions (most commonly used)
+    collect_all_files,
+    collect_datasets_and_years,
+    filter_manifest_files,
     CacheConfig,
     // Essential components
     CacheManager,
@@ -52,16 +56,11 @@ pub use crate::app::{
     SessionResult,
     WorkQueue,
     WorkQueueConfig,
-
-    // Manifest functions (most commonly used)
-    collect_all_files,
-    collect_datasets_and_years,
-    filter_manifest_files,
 };
 
 // Authentication functions
 pub use crate::auth::{
-    AuthStatus, check_credentials, get_auth_status, setup_credentials, verify_credentials,
+    check_credentials, get_auth_status, setup_credentials, verify_credentials, AuthStatus,
 };
 
 // Commonly used constants

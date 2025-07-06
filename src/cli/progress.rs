@@ -50,7 +50,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use tokio::sync::{RwLock, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -444,18 +444,8 @@ impl ProgressDisplay {
             // Note: No need to disable raw mode since we don't enable it
         }
 
-        // Final statistics report
-        let stats = self.stats.read().await;
-        eprintln!("\n✅ Download Summary:");
-        eprintln!("   Total files: {}", stats.total_files);
-        eprintln!("   Completed: {}", stats.files_completed);
-        eprintln!("   Failed: {}", stats.files_failed);
-        eprintln!("   Total bytes: {} bytes", stats.total_bytes_downloaded);
-        eprintln!("   Duration: {:?}", stats.session_duration);
-
-        if stats.files_failed > 0 {
-            eprintln!("⚠️  Some files failed to download. Check logs for details.");
-        }
+        // Note: Final statistics are reported by the command handler
+        // to ensure accuracy and avoid duplication
 
         Ok(())
     }
