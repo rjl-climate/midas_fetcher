@@ -83,7 +83,7 @@ use crate::constants::{cache, files};
 use crate::errors::{CacheError, CacheResult};
 
 /// Configuration for the cache management system
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
     /// Root directory for cache storage (OS-specific if None)
     pub cache_root: Option<PathBuf>,
@@ -283,12 +283,18 @@ impl CacheManager {
     }
 
     /// Get the default cache directory for the current OS
+    ///
+    /// Uses the Application Support directory to keep config and cache unified:
+    /// - macOS: ~/Library/Application Support/midas-fetcher/cache
+    /// - Linux: ~/.config/midas-fetcher/cache  
+    /// - Windows: %APPDATA%/midas-fetcher/cache
     fn get_default_cache_dir() -> CacheResult<PathBuf> {
-        let cache_dir = dirs::cache_dir()
+        let cache_dir = dirs::config_dir()
             .ok_or_else(|| CacheError::DirectoryNotAccessible {
-                path: PathBuf::from("system cache directory"),
+                path: PathBuf::from("system config directory"),
             })?
-            .join("midas-fetcher");
+            .join("midas-fetcher")
+            .join("cache");
 
         Ok(cache_dir)
     }

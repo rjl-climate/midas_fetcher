@@ -63,7 +63,7 @@ use crate::constants::workers;
 use crate::errors::{DownloadError, DownloadResult};
 
 /// Configuration for download workers
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerConfig {
     /// Number of concurrent workers to spawn
     pub worker_count: usize,

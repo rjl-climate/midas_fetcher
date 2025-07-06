@@ -11,6 +11,7 @@ use std::time::Duration;
 use governor::{clock::DefaultClock, state::InMemoryState, Jitter, Quota, RateLimiter};
 use reqwest::Client;
 use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use url::Url;
@@ -30,7 +31,7 @@ pub struct CedaClient {
 }
 
 /// Configuration for HTTP client optimizations
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
     /// Enable HTTP/2 support (disabled by default for CEDA compatibility)
     pub http2: bool,

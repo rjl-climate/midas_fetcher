@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::stream::{Stream, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
 use tracing::{debug, error, info, warn};
@@ -50,7 +51,7 @@ impl ManifestStats {
 }
 
 /// Configuration for manifest streaming
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestConfig {
     /// Root directory for file destinations
     pub destination_root: PathBuf,
@@ -64,8 +65,13 @@ pub struct ManifestConfig {
 
 impl Default for ManifestConfig {
     fn default() -> Self {
+        // Resolve the default cache directory (unified with Application Support)
+        let destination_root = dirs::config_dir()
+            .map(|dir| dir.join("midas-fetcher").join("cache"))
+            .unwrap_or_else(|| PathBuf::from("./cache"));
+
         Self {
-            destination_root: PathBuf::from("./cache"),
+            destination_root,
             max_tracked_hashes: 1_000_000, // 1M hashes (~64MB memory)
             allow_duplicates: false,
             progress_batch_size: workers::MANIFEST_BATCH_SIZE,

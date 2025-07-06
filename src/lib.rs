@@ -159,6 +159,7 @@
 // Core modules - these contain the main library functionality
 pub mod app;
 pub mod auth;
+pub mod config;
 pub mod constants;
 pub mod errors;
 
@@ -216,6 +217,9 @@ pub use app::{
 pub use auth::{
     check_credentials, get_auth_status, setup_credentials, verify_credentials, AuthStatus,
 };
+
+// Re-export configuration functionality
+pub use config::{AppConfig, LoggingConfig};
 
 // Re-export commonly used constants (but not internal implementation details)
 pub use constants::{

@@ -134,7 +134,7 @@ impl WorkInfo {
 }
 
 /// Configuration for the work queue
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkQueueConfig {
     /// Maximum number of retry attempts per file
     pub max_retries: u32,

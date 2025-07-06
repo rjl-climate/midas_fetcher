@@ -63,7 +63,7 @@ use crate::constants::workers;
 use crate::errors::DownloadResult;
 
 /// Configuration for the download coordinator
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoordinatorConfig {
     /// Number of concurrent workers to spawn
     pub worker_count: usize,

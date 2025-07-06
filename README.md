@@ -23,6 +23,7 @@ A command-line tool and Rust library designed to efficiently download large volu
 - [Account & Authentication](#account--authentication)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Configuration](#configuration)
 - [Commands & Usage](#commands--usage)
 - [Technical Architecture](#technical-architecture)
 - [Performance](#performance)
@@ -180,6 +181,143 @@ midas_fetcher cache verify --dataset uk-daily-temperature-obs
 # Check cache information
 midas_fetcher cache info
 ```
+
+## Configuration
+
+MIDAS Fetcher uses a unified configuration system that automatically creates sensible defaults while allowing customization for specific needs.
+
+### Configuration File Location
+
+The configuration file is automatically created on first run at:
+
+**macOS/Linux:**
+```
+~/.config/midas-fetcher/config.toml
+```
+
+**Windows:**
+```
+%APPDATA%\midas-fetcher\config.toml
+```
+
+### Key User Settings
+
+These are the main settings you might want to adjust:
+
+| Setting | Default | Purpose | Safety Level |
+|---------|---------|---------|--------------|
+| `rate_limit_rps` | 15 | CEDA server request rate | ⚠️ **Critical** |
+| `worker_count` | 8 | Download concurrency | ⚠️ **Performance** |
+| `cache_root` | Auto | Custom cache location | ✅ **Safe** |
+| `request_timeout_secs` | 60 | Download timeout | ✅ **Safe** |
+| `connect_timeout_secs` | 30 | Connection timeout | ✅ **Safe** |
+
+#### Rate Limiting (Critical Setting)
+```toml
+[client]
+rate_limit_rps = 15  # Total requests per second across ALL workers
+```
+
+> ⚠️ **IMPORTANT**: This controls how fast you hit CEDA's servers. The 15 RPS default is shared across all workers and is respectful to CEDA infrastructure. **Don't increase this unless you have explicit permission from CEDA.** Too aggressive settings can result in IP blocking.
+
+#### Worker Count (Performance Setting)
+```toml
+[coordinator]
+worker_count = 8  # Number of concurrent download workers
+```
+
+> ⚠️ **Performance Impact**: More workers = faster downloads, but diminishing returns beyond 8-12 workers. The rate limit (15 RPS) is shared across all workers, so adding workers won't exceed the server politeness limits.
+
+#### Cache Location (Safe to Modify)
+```toml
+[cache]
+cache_root = "/custom/path/to/cache"  # Uncomment and modify to use custom location
+```
+
+By default, cache uses the same unified directory as the config file:
+- **macOS/Linux**: `~/.config/midas-fetcher/cache/`
+- **Windows**: `%APPDATA%\midas-fetcher\cache\`
+
+#### Timeout Settings (Safe to Modify)
+```toml
+[client]
+request_timeout_secs = 60   # How long to wait for downloads
+connect_timeout_secs = 30   # How long to wait for connections
+```
+
+Increase these if you have a slow connection or are downloading large files.
+
+### Advanced Settings Warning
+
+> ⚠️ **WARNING**: The configuration file contains many advanced settings for HTTP connections, retry logic, queue management, and progress reporting. **Do not modify these unless you understand their implications.** Incorrect settings can cause:
+> 
+> - Download failures
+> - Server overload (potentially resulting in IP blocks)
+> - Performance degradation
+> - Cache corruption
+
+**Advanced settings you should NOT modify without expertise:**
+- HTTP/2 settings (`http2`, `tcp_nodelay`, `pool_*`)
+- Retry mechanisms (`max_retries`, `retry_*`)
+- Queue management (`max_pending_items`, `work_timeout_secs`)
+- Progress reporting intervals
+- Manifest processing settings
+
+### Configuration Management
+
+#### Viewing Current Configuration
+```bash
+# See where your config file is located
+midas_fetcher cache info
+
+# Edit the configuration file
+nano ~/.config/midas-fetcher/config.toml
+# or on macOS:
+open ~/.config/midas-fetcher/config.toml
+```
+
+#### Resetting to Defaults
+```bash
+# Remove the config file to regenerate defaults
+rm ~/.config/midas-fetcher/config.toml
+
+# Next run will recreate with default settings
+midas_fetcher auth status
+```
+
+#### Configuration Override Priority
+Settings are applied in this order (later overrides earlier):
+
+1. **Default values** (built into the application)
+2. **Configuration file** (`~/.config/midas-fetcher/config.toml`)
+3. **Environment variables** (future feature)
+4. **Command-line arguments** (`--workers`, `--cache-dir`, etc.)
+
+#### Example: Conservative Settings for Shared Connections
+```toml
+[client]
+rate_limit_rps = 5          # More conservative for shared networks
+
+[coordinator]
+worker_count = 4            # Fewer workers for limited bandwidth
+
+[client]
+request_timeout_secs = 120  # Longer timeout for slow connections
+```
+
+#### Example: Faster Settings for Dedicated Connections
+```toml
+[client]
+rate_limit_rps = 15         # Default (don't increase without CEDA permission)
+
+[coordinator]
+worker_count = 12           # More workers for fast connections
+
+[coordinator.worker]
+download_timeout_secs = 300 # Shorter timeout for fast networks
+```
+
+> 💡 **Tip**: Test any configuration changes with `--limit 10` first to ensure they work before doing large downloads.
 
 ## Commands & Usage
 

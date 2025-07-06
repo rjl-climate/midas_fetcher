@@ -12,6 +12,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 use midas_fetcher::cli::{
     handle_auth, handle_cache, handle_download, handle_manifest, Cli, Commands,
 };
+use midas_fetcher::config::AppConfig;
 use midas_fetcher::errors::Result;
 
 #[tokio::main]
@@ -33,6 +34,12 @@ async fn run() -> Result<()> {
 
     // Parse command line arguments
     let cli = Cli::parse_args();
+
+    // Initialize configuration (first-run setup if needed)
+    AppConfig::initialize_first_run().await?;
+
+    // Load configuration with CLI overrides
+    let _config = AppConfig::load(cli.global.config.clone()).await?;
 
     // Initialize logging based on verbosity
     init_logging(&cli);
