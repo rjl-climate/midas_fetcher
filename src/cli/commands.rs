@@ -665,13 +665,77 @@ fn display_manifest_table(datasets_map: &HashMap<String, crate::app::DatasetSumm
     }
 }
 
+/// Display simple manifest table with dataset name and file count only
+fn display_simple_manifest_table(datasets_map: &HashMap<String, crate::app::DatasetSummary>) {
+    if datasets_map.is_empty() {
+        println!("No datasets found in manifest.");
+        return;
+    }
+
+    // Calculate column widths
+    let name_width = datasets_map
+        .keys()
+        .map(|name| name.len())
+        .max()
+        .unwrap_or(12)
+        .max(12); // Minimum width for "Dataset Name"
+
+    let files_width = datasets_map
+        .values()
+        .map(|summary| summary.file_count.to_string().len())
+        .max()
+        .unwrap_or(5)
+        .max(5); // Minimum width for "Files"
+
+    // Print header
+    println!(
+        "{:<width$} {:>files_width$}",
+        "Dataset Name",
+        "Files",
+        width = name_width,
+        files_width = files_width
+    );
+
+    // Print separator line
+    println!("{}", "─".repeat(name_width + files_width + 1));
+
+    // Sort datasets by name for consistent output
+    let mut sorted_datasets: Vec<_> = datasets_map.iter().collect();
+    sorted_datasets.sort_by_key(|(name, _)| *name);
+
+    // Print data rows
+    for (name, summary) in sorted_datasets {
+        println!(
+            "{:<width$} {:>files_width$}",
+            name,
+            summary.file_count,
+            width = name_width,
+            files_width = files_width
+        );
+    }
+}
+
 /// Handle manifest list command
 async fn handle_manifest_list(datasets_only: bool, dataset: Option<String>) -> Result<()> {
     let manifest_path = find_manifest_file().await?;
 
+    // Add spinner for manifest loading
+    use indicatif::{ProgressBar, ProgressStyle};
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap()
+            .tick_strings(&["◐", "◓", "◑", "◒"]),
+    );
+    spinner.set_message("Preparing list...");
+    spinner.enable_steady_tick(std::time::Duration::from_millis(120));
+
     let datasets_map = collect_datasets_and_years(&manifest_path)
         .await
         .map_err(AppError::Manifest)?;
+
+    spinner.finish_and_clear();
 
     if datasets_only {
         println!("Available Datasets:");
@@ -701,26 +765,8 @@ async fn handle_manifest_list(datasets_only: bool, dataset: Option<String>) -> R
         return Ok(());
     }
 
-    // Show all datasets and years
-    println!("📋 Available Datasets and Years:");
-    println!();
-
-    for (name, summary) in &datasets_map {
-        println!("📊 {}", name);
-        println!(
-            "   Versions: {}",
-            if summary.versions.is_empty() {
-                "none".to_string()
-            } else {
-                summary.versions.join(", ")
-            }
-        );
-        if let Some(latest) = summary.latest_version() {
-            println!("   Latest: {}", latest);
-        }
-        println!("   Files: {}", summary.file_count);
-        println!();
-    }
+    // Show simple table with dataset name and file count only
+    display_simple_manifest_table(&datasets_map);
 
     Ok(())
 }
