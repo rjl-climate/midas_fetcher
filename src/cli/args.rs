@@ -98,14 +98,6 @@ pub struct DownloadArgs {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Download only metadata/capability files
-    #[arg(long)]
-    pub metadata_only: bool,
-
-    /// Download only data files (exclude metadata)
-    #[arg(long)]
-    pub data_only: bool,
-
     /// Enable verbose logging and detailed progress information
     #[arg(short, long)]
     pub verbose: bool,
@@ -238,12 +230,8 @@ impl Cli {
 }
 
 impl DownloadArgs {
-    /// Check if both metadata_only and data_only are specified (invalid)
+    /// Validate download arguments
     pub fn validate(&self) -> Result<(), String> {
-        if self.metadata_only && self.data_only {
-            return Err("Cannot specify both --metadata-only and --data-only".to_string());
-        }
-
         if self.workers == 0 {
             return Err("Number of workers must be greater than 0".to_string());
         }
@@ -262,11 +250,7 @@ impl DownloadArgs {
 
     /// Check if this is a filtered download (specific criteria)
     pub fn is_filtered(&self) -> bool {
-        self.dataset.is_some()
-            || self.county.is_some()
-            || self.quality_zero
-            || self.metadata_only
-            || self.data_only
+        self.dataset.is_some() || self.county.is_some() || self.quality_zero
     }
 }
 
@@ -284,22 +268,13 @@ mod tests {
             workers: 8,
             force: false,
             dry_run: false,
-            metadata_only: false,
-            data_only: false,
             verbose: false,
         };
 
         // Valid configuration
         assert!(args.validate().is_ok());
 
-        // Invalid: both metadata_only and data_only
-        args.metadata_only = true;
-        args.data_only = true;
-        assert!(args.validate().is_err());
-
         // Invalid: zero workers
-        args.metadata_only = false;
-        args.data_only = false;
         args.workers = 0;
         assert!(args.validate().is_err());
     }
@@ -314,8 +289,6 @@ mod tests {
             workers: 8,
             force: false,
             dry_run: false,
-            metadata_only: false,
-            data_only: false,
             verbose: false,
         };
 
@@ -344,8 +317,6 @@ mod tests {
             workers: 8,
             force: false,
             dry_run: false,
-            metadata_only: false,
-            data_only: false,
             verbose: false,
         };
 

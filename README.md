@@ -76,8 +76,8 @@ MIDAS Fetcher solves these problems through intelligent automation and sophistic
 
 ### Core Capabilities
 - 🔍 **Dataset Discovery**: Automatic manifest parsing and interactive dataset selection
-- 🎯 **Selective Downloads**: Filter by dataset, county, station, quality version, or time period
-- 🚀 **Concurrent Downloads**: It's fast
+- 🎯 **Complete Downloads**: Downloads all file types (data, capability, metadata, station logs) for comprehensive analysis
+- 🚀 **Concurrent Downloads**: High-performance parallel processing with linear scaling
 - 📦 **Intelligent Caching**: Hierarchical organization with deduplication and fast verification
 - ✅ **Data Integrity**: Atomic file operations with MD5 verification and cache integrity checking
 - 🔄 **Resumable Downloads**: Continues from exactly where interrupted, no wasted bandwidth
@@ -160,7 +160,7 @@ midas_fetcher manifest info
 # Interactive dataset selection
 midas_fetcher download
 
-# Download specific dataset
+# Download specific dataset (includes all file types: data, capability, metadata, and station logs)
 midas_fetcher download --dataset uk-daily-temperature-obs
 
 # Download with filters
@@ -323,7 +323,7 @@ download_timeout_secs = 300 # Shorter timeout for fast networks
 
 ### Download Command
 ```bash
-# Basic download
+# Basic download (includes all file types: data, capability, metadata, and station logs)
 midas_fetcher download --dataset <dataset-name>
 
 # With filtering
@@ -338,6 +338,34 @@ midas_fetcher download \
   --dataset uk-daily-temperature-obs \
   --workers 8 \
   --force  # Restart incomplete downloads
+```
+
+#### File Types Downloaded
+Each dataset download includes all available file types:
+
+- **Data files**: Weather observations organized by `qcv-1/county/station/`
+- **Capability files**: Station metadata and capabilities in `capability/county/station/`
+- **Station metadata**: Master station information in `station-metadata/`
+- **Change logs**: Dataset version changes in root directory
+- **Station logs**: Individual station change histories in `station-log-files/`
+
+#### Cache Directory Structure
+```
+cache/uk-daily-temperature-obs/
+├── qcv-1/                    # Quality-controlled data files
+│   ├── devon/
+│   │   └── 01381_twist/
+│   └── ...
+├── capability/               # Station capability files
+│   ├── devon/
+│   │   └── 01381_twist/
+│   └── ...
+├── station-metadata/         # Master station metadata
+│   └── uk-daily-temperature-obs_station-metadata.csv
+├── station-log-files/        # Individual station change logs
+│   ├── station_log_01381_twist_2020.txt
+│   └── ...
+└── change_log.txt           # Dataset-level change log
 ```
 
 ### Authentication Commands
@@ -404,7 +432,8 @@ The fundamental challenge is coordinating multiple workers accessing shared file
 The cache system ensures data integrity through multiple layers:
 
 - **Hierarchical organization**: `dataset/quality/county/station` structure matches CEDA
-- **Capability files**: Separate folder structure for metadata and capability files
+- **Complete file coverage**: Automatically downloads all available file types (data, capability, metadata, station logs)
+- **Intelligent organization**: Special files organized in dedicated directories (station-metadata/, station-log-files/)
 - **Atomic operations**: Temp file + rename pattern prevents corruption
 - **MD5 verification**: Automatic verification against manifest checksums
 - **Deduplication**: Hash-based detection prevents duplicate downloads
@@ -565,9 +594,26 @@ You may choose either license for your use.
 
 ## Changelog
 
-### Current Status: v0.1.0 (Active Development)
+### v0.1.1 (July 2025) - Bug Fixes & Simplification
 
-#### ✅ Completed Features
+#### 🐛 Bug Fixes
+- **Fixed special file downloads**: Station metadata and station log files now download correctly for all datasets
+- **Fixed cache path generation**: Special files (station-metadata, change-log, station-log) are now properly organized in dedicated directories instead of being misplaced in `/no-quality/` paths
+
+#### 🎯 Improvements  
+- **Simplified download command**: Removed confusing `--metadata-only` and `--data-only` flags
+- **Complete file coverage**: Downloads now automatically include all available file types (data, capability, metadata, station logs)
+- **Better user experience**: Single command downloads everything needed for comprehensive analysis
+
+#### 🔧 Technical Changes
+- Enhanced file type detection logic in manifest parsing
+- Simplified filtering system to always include special file types
+- Updated cache directory structure for better organization
+- Comprehensive test coverage for special file handling
+
+### v0.1.0 (July 2025) - Initial Release
+
+#### ✅ Core Features Completed
 - [x] **Project foundation**: Cargo setup, dependencies, error handling
 - [x] **Authentication system**: Secure CEDA credential management
 - [x] **HTTP client**: Rate-limited, authenticated downloads with backoff
@@ -599,4 +645,4 @@ You may choose either license for your use.
 **Status**: Production Ready
 **Maintainer**: Richard Lyon richlyon@fastmail.com
 **First Release**: 2025
-**Latest Update**: July 2025
+**Latest Update**: July 2025 (v0.1.1)

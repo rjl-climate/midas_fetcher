@@ -109,8 +109,6 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
         Some(&selected_dataset),
         args.county.as_deref(),
         &quality_version,
-        args.metadata_only,
-        args.data_only,
     )
     .await
     .map_err(AppError::Manifest)?;

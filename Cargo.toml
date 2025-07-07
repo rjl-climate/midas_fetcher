@@ -1,6 +1,6 @@
 [package]
 name = "midas_fetcher"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.70"
 default-run = "midas_fetcher"
@@ -12,14 +12,12 @@ homepage = "https://github.com/rjl-climate/midas_fetcher"
 documentation = "https://docs.rs/midas_fetcher"
 readme = "README.md"
 keywords = ["weather", "climate", "data", "download", "midas"]
-categories = ["science", "command-line-utilities", "web-programming::http-client"]
-exclude = [
-    "examples/*.png",
-    "TASK.md",
-    "PRPs/*",
-    ".env*",
-    "cache/*"
+categories = [
+    "science",
+    "command-line-utilities",
+    "web-programming::http-client",
 ]
+exclude = ["examples/*.png", "TASK.md", "PRPs/*", ".env*", "cache/*"]
 
 [dependencies]
 # Core async runtime and networking

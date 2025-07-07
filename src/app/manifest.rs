@@ -807,8 +807,6 @@ ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-temperature-obs/dataset-versio
             Some("uk-daily-temperature-obs"),
             None,
             &crate::app::models::QualityControlVersion::V1,
-            false,
-            false,
         )
         .await
         .unwrap();
@@ -856,8 +854,6 @@ ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-rain-obs/dataset-version-20250
             Some("uk-daily-temperature-obs"),
             None,
             &crate::app::models::QualityControlVersion::V1,
-            false,
-            false,
         )
         .await
         .unwrap();
@@ -877,8 +873,6 @@ ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-rain-obs/dataset-version-20250
             Some("uk-daily-rain-obs"),
             None,
             &crate::app::models::QualityControlVersion::V0, // Note: rain uses QCV0
-            false,
-            false,
         )
         .await
         .unwrap();
@@ -1080,8 +1074,6 @@ pub async fn collect_datasets_and_years<P: AsRef<Path>>(
 /// * `dataset_name` - Optional dataset filter
 /// * `county` - Optional county filter
 /// * `quality_version` - Quality control version to filter by
-/// * `metadata_only` - Only include metadata/capability files
-/// * `data_only` - Only include data files (exclude metadata)
 ///
 /// # Returns
 ///
@@ -1091,8 +1083,6 @@ pub async fn filter_manifest_files<P: AsRef<Path>>(
     dataset_name: Option<&str>,
     county: Option<&str>,
     quality_version: &crate::app::models::QualityControlVersion,
-    metadata_only: bool,
-    data_only: bool,
 ) -> ManifestResult<Vec<FileInfo>> {
     use futures::StreamExt;
 
@@ -1121,27 +1111,14 @@ pub async fn filter_manifest_files<P: AsRef<Path>>(
         }
 
         // Apply quality version filter (only for data files)
+        // Apply quality version filter for data files only
+        // Always include special files (station-metadata, change-log, station-log) and capability files
         if let Some(ref file_qv) = dataset_info.quality_version {
             if file_qv != quality_version {
                 continue;
             }
-        } else {
-            // File has no quality version (capability/metadata file)
-            // Include it unless data_only is specified
-            if data_only {
-                continue;
-            }
         }
-
-        // Apply file type filters
-        if let Some(ref file_type) = dataset_info.file_type {
-            if metadata_only && file_type != "capability" && file_type != "metadata" {
-                continue;
-            }
-            if data_only && (file_type == "capability" || file_type == "metadata") {
-                continue;
-            }
-        }
+        // Files without quality version (capability files and special files) are always included
 
         filtered_files.push(file_info);
     }
