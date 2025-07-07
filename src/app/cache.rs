@@ -327,15 +327,37 @@ impl CacheManager {
 
         // Determine path structure based on file type
         if let Some(ref file_type) = dataset.file_type {
-            if file_type == "capability" || file_type == "metadata" {
-                // Capability and metadata files go in separate capability folder
-                path.push("capability");
-            } else {
-                // Data files use quality version structure
-                if let Some(qv) = &dataset.quality_version {
-                    path.push(qv.to_filename_format());
-                } else {
-                    path.push("no-quality");
+            match file_type.as_str() {
+                "capability" | "metadata" => {
+                    // Capability and metadata files go in separate capability folder
+                    path.push("capability");
+                }
+                "station-metadata" => {
+                    // Station metadata files go in station-metadata folder
+                    path.push("station-metadata");
+                    // Add filename directly and return early (no county/station structure)
+                    path.push(&file_info.file_name);
+                    return path;
+                }
+                "change-log" => {
+                    // Change log files go directly in dataset root
+                    path.push(&file_info.file_name);
+                    return path;
+                }
+                "station-log" => {
+                    // Station log files go in station-log-files folder
+                    path.push("station-log-files");
+                    // Add filename directly and return early (no county/station structure)
+                    path.push(&file_info.file_name);
+                    return path;
+                }
+                _ => {
+                    // Data files use quality version structure
+                    if let Some(qv) = &dataset.quality_version {
+                        path.push(qv.to_filename_format());
+                    } else {
+                        path.push("no-quality");
+                    }
                 }
             }
         } else {
@@ -1202,6 +1224,144 @@ mod tests {
             temp_dir.path().display()
         );
         println!("   You can inspect the directory structure manually if needed.");
+    }
+
+    #[tokio::test]
+    async fn test_station_metadata_cache_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_root: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let cache = CacheManager::new(config).await.unwrap();
+
+        // Create a station metadata file
+        let hash = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e").unwrap();
+        let dataset_info = DatasetFileInfo {
+            dataset_name: "uk-daily-temperature-obs".to_string(),
+            version: "202507".to_string(),
+            county: None,
+            station_id: None,
+            station_name: None,
+            quality_version: None,
+            year: None,
+            file_type: Some("station-metadata".to_string()),
+        };
+
+        let file_info = FileInfo {
+            hash,
+            relative_path: "./data/station-metadata.csv".to_string(),
+            file_name: "midas-open_uk-daily-temperature-obs_dv-202507_station-metadata.csv"
+                .to_string(),
+            dataset_info,
+            retry_count: 0,
+            last_attempt: None,
+            estimated_size: None,
+            destination_path: PathBuf::from("/tmp/station-metadata.csv"),
+        };
+
+        let path = cache.get_file_path(&file_info);
+
+        // Station metadata files should go in station-metadata folder
+        let expected_path = temp_dir
+            .path()
+            .join("uk-daily-temperature-obs")
+            .join("station-metadata")
+            .join("midas-open_uk-daily-temperature-obs_dv-202507_station-metadata.csv");
+
+        assert_eq!(path, expected_path);
+    }
+
+    #[tokio::test]
+    async fn test_change_log_cache_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_root: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let cache = CacheManager::new(config).await.unwrap();
+
+        // Create a change log file
+        let hash = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e").unwrap();
+        let dataset_info = DatasetFileInfo {
+            dataset_name: "uk-daily-temperature-obs".to_string(),
+            version: "202507".to_string(),
+            county: None,
+            station_id: None,
+            station_name: None,
+            quality_version: None,
+            year: None,
+            file_type: Some("change-log".to_string()),
+        };
+
+        let file_info = FileInfo {
+            hash,
+            relative_path: "./data/change-log.txt".to_string(),
+            file_name: "midas-open_uk-daily-temperature-obs_dv-202507_change_log.txt".to_string(),
+            dataset_info,
+            retry_count: 0,
+            last_attempt: None,
+            estimated_size: None,
+            destination_path: PathBuf::from("/tmp/change-log.txt"),
+        };
+
+        let path = cache.get_file_path(&file_info);
+
+        // Change log files should go directly in dataset root
+        let expected_path = temp_dir
+            .path()
+            .join("uk-daily-temperature-obs")
+            .join("midas-open_uk-daily-temperature-obs_dv-202507_change_log.txt");
+
+        assert_eq!(path, expected_path);
+    }
+
+    #[tokio::test]
+    async fn test_station_log_cache_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = CacheConfig {
+            cache_root: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let cache = CacheManager::new(config).await.unwrap();
+
+        // Create a station log file
+        let hash = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e").unwrap();
+        let dataset_info = DatasetFileInfo {
+            dataset_name: "uk-daily-temperature-obs".to_string(),
+            version: "202507".to_string(),
+            county: None,
+            station_id: None,
+            station_name: None,
+            quality_version: None,
+            year: None,
+            file_type: Some("station-log".to_string()),
+        };
+
+        let file_info = FileInfo {
+            hash,
+            relative_path: "./data/station-log.txt".to_string(),
+            file_name: "some-station-log.txt".to_string(),
+            dataset_info,
+            retry_count: 0,
+            last_attempt: None,
+            estimated_size: None,
+            destination_path: PathBuf::from("/tmp/station-log.txt"),
+        };
+
+        let path = cache.get_file_path(&file_info);
+
+        // Station log files should go in station-log-files folder
+        let expected_path = temp_dir
+            .path()
+            .join("uk-daily-temperature-obs")
+            .join("station-log-files")
+            .join("some-station-log.txt");
+
+        assert_eq!(path, expected_path);
     }
 
     /// Generate a comprehensive synthetic manifest with realistic MIDAS data patterns

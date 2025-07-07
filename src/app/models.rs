@@ -115,6 +115,24 @@ impl DatasetFileInfo {
             });
         }
 
+        // Check for special file types that don't follow standard structure
+        if let Some(filename) = components.last() {
+            // Station metadata files: *station-metadata.csv
+            if filename.contains("station-metadata") {
+                return Self::parse_special_file(components, "station-metadata".to_string());
+            }
+
+            // Change log files: *change_log.txt
+            if filename.contains("change_log") && filename.ends_with(".txt") {
+                return Self::parse_special_file(components, "change-log".to_string());
+            }
+        }
+
+        // Check for station log files in change_log_station_files directory
+        if components.iter().any(|c| *c == "change_log_station_files") {
+            return Self::parse_special_file(components, "station-log".to_string());
+        }
+
         // Expected structures:
         // Normal data file: data/{dataset}/{version}/{county}/{station}/qc-version-{X}/{filename}
         // Capability file:  data/{dataset}/{version}/{county}/{station}/{filename}
@@ -246,6 +264,47 @@ impl DatasetFileInfo {
             quality_version,
             year,
             file_type,
+        })
+    }
+
+    /// Parse special file types that don't follow standard directory structure
+    fn parse_special_file(components: Vec<&str>, file_type: String) -> ManifestResult<Self> {
+        // Basic validation
+        if components.len() < 3 {
+            return Err(ManifestError::InvalidPath {
+                path: components.join("/"),
+            });
+        }
+
+        // Extract basic components
+        let dataset_name = if components.len() > 1 {
+            components[1].to_string()
+        } else {
+            return Err(ManifestError::InvalidPath {
+                path: components.join("/"),
+            });
+        };
+
+        let version = if components.len() > 2 {
+            // Extract version from dataset-version-XXXXXX format
+            if let Some(version_str) = components[2].strip_prefix("dataset-version-") {
+                version_str.to_string()
+            } else {
+                components[2].to_string()
+            }
+        } else {
+            String::new()
+        };
+
+        Ok(DatasetFileInfo {
+            dataset_name,
+            version,
+            county: None,
+            station_id: None,
+            station_name: None,
+            quality_version: None,
+            year: None,
+            file_type: Some(file_type),
         })
     }
 
@@ -785,5 +844,73 @@ mod tests {
         );
         assert_eq!(dataset_info.year, Some("1997".to_string()));
         assert_eq!(dataset_info.file_type, Some("data".to_string()));
+    }
+
+    #[test]
+    fn test_station_metadata_file_detection() {
+        // Test station metadata file detection
+        let path = "./data/uk-daily-temperature-obs/dataset-version-202507/no-quality/midas-open_uk-daily-temperature-obs_dv-202507_station-metadata.csv";
+        let dataset_info = DatasetFileInfo::from_path(path).unwrap();
+
+        assert_eq!(dataset_info.dataset_name, "uk-daily-temperature-obs");
+        assert_eq!(dataset_info.version, "202507");
+        assert_eq!(dataset_info.county, None);
+        assert_eq!(dataset_info.station_id, None);
+        assert_eq!(dataset_info.station_name, None);
+        assert_eq!(dataset_info.quality_version, None);
+        assert_eq!(dataset_info.year, None);
+        assert_eq!(dataset_info.file_type, Some("station-metadata".to_string()));
+    }
+
+    #[test]
+    fn test_change_log_file_detection() {
+        // Test change log file detection
+        let path = "./data/uk-daily-temperature-obs/dataset-version-202507/no-quality/midas-open_uk-daily-temperature-obs_dv-202507_change_log.txt";
+        let dataset_info = DatasetFileInfo::from_path(path).unwrap();
+
+        assert_eq!(dataset_info.dataset_name, "uk-daily-temperature-obs");
+        assert_eq!(dataset_info.version, "202507");
+        assert_eq!(dataset_info.county, None);
+        assert_eq!(dataset_info.station_id, None);
+        assert_eq!(dataset_info.station_name, None);
+        assert_eq!(dataset_info.quality_version, None);
+        assert_eq!(dataset_info.year, None);
+        assert_eq!(dataset_info.file_type, Some("change-log".to_string()));
+    }
+
+    #[test]
+    fn test_station_log_file_detection() {
+        // Test station log file detection
+        let path = "./data/uk-daily-temperature-obs/dataset-version-202507/change_log_station_files/some-station-log.txt";
+        let dataset_info = DatasetFileInfo::from_path(path).unwrap();
+
+        assert_eq!(dataset_info.dataset_name, "uk-daily-temperature-obs");
+        assert_eq!(dataset_info.version, "202507");
+        assert_eq!(dataset_info.county, None);
+        assert_eq!(dataset_info.station_id, None);
+        assert_eq!(dataset_info.station_name, None);
+        assert_eq!(dataset_info.quality_version, None);
+        assert_eq!(dataset_info.year, None);
+        assert_eq!(dataset_info.file_type, Some("station-log".to_string()));
+    }
+
+    #[test]
+    fn test_special_file_edge_cases() {
+        // Test various edge cases for special file detection
+
+        // Station metadata with different structure
+        let path = "./data/uk-daily-temperature-obs/dataset-version-202507/nested/path/station-metadata-report.csv";
+        let dataset_info = DatasetFileInfo::from_path(path).unwrap();
+        assert_eq!(dataset_info.file_type, Some("station-metadata".to_string()));
+
+        // Change log with different structure
+        let path = "./data/uk-daily-temperature-obs/dataset-version-202507/another/path/system_change_log.txt";
+        let dataset_info = DatasetFileInfo::from_path(path).unwrap();
+        assert_eq!(dataset_info.file_type, Some("change-log".to_string()));
+
+        // Station log in change_log_station_files directory
+        let path = "./data/uk-daily-temperature-obs/dataset-version-202507/change_log_station_files/deep/nested/log.txt";
+        let dataset_info = DatasetFileInfo::from_path(path).unwrap();
+        assert_eq!(dataset_info.file_type, Some("station-log".to_string()));
     }
 }
