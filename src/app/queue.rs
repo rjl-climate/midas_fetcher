@@ -144,8 +144,6 @@ pub struct WorkQueueConfig {
     pub max_workers: u32,
     /// Timeout for work items (if a worker doesn't report progress)
     pub work_timeout: Duration,
-    /// Maximum size of pending queue (memory limit)
-    pub max_pending_items: usize,
 }
 
 impl Default for WorkQueueConfig {
@@ -155,7 +153,6 @@ impl Default for WorkQueueConfig {
             retry_delay: workers::RETRY_DELAY,
             max_workers: workers::DEFAULT_WORKER_COUNT as u32,
             work_timeout: workers::WORK_TIMEOUT,
-            max_pending_items: workers::MAX_PENDING_ITEMS,
         }
     }
 }
@@ -367,14 +364,6 @@ impl WorkQueue {
             return Ok(false);
         }
 
-        // Check memory limits
-        if state.pending.len() >= self.config.max_pending_items {
-            return Err(DownloadError::QueueFull {
-                current_size: state.pending.len(),
-                max_size: self.config.max_pending_items,
-            });
-        }
-
         // Create work info
         let work_info = WorkInfo::with_priority(file_info, priority);
 
@@ -398,7 +387,6 @@ impl WorkQueue {
         let mut state = self.state.lock().await;
         let mut added_count = 0;
         let mut skipped_duplicates = 0;
-        let mut hit_capacity_limit = false;
 
         info!("Starting bulk add of {} files to queue", total_files);
         info!(
@@ -415,22 +403,6 @@ impl WorkQueue {
                 state.stats.duplicate_count += 1;
                 skipped_duplicates += 1;
                 continue;
-            }
-
-            // Check memory limits (only count pending items, not completed/failed ones)
-            let current_pending_count = state.pending.len();
-            if current_pending_count + added_count >= self.config.max_pending_items {
-                hit_capacity_limit = true;
-                let total_work_items = state.work_items.len();
-                warn!(
-                    "Queue capacity limit reached: {} pending + {} new = {} items (limit: {}, total work items: {})",
-                    current_pending_count,
-                    added_count,
-                    current_pending_count + added_count,
-                    self.config.max_pending_items,
-                    total_work_items
-                );
-                break;
             }
 
             // Create and add work info
@@ -455,14 +427,6 @@ impl WorkQueue {
             "Bulk add completed: {}/{} files added, {} duplicates skipped",
             added_count, total_files, skipped_duplicates
         );
-
-        if hit_capacity_limit {
-            let remaining = total_files - added_count - skipped_duplicates;
-            warn!(
-                "Queue capacity limit reached - {} files not added due to capacity constraints",
-                remaining
-            );
-        }
 
         Ok(added_count)
     }
@@ -1084,38 +1048,23 @@ mod tests {
         assert_eq!(stats.in_progress_count, 5);
     }
 
-    /// Test queue capacity limits
+    /// Test queue unlimited capacity
     #[tokio::test]
-    async fn test_queue_capacity_limits() {
-        let config = WorkQueueConfig {
-            max_pending_items: 2,
-            ..Default::default()
-        };
-        let queue = WorkQueue::with_config(config);
+    async fn test_queue_unlimited_capacity() {
+        let queue = WorkQueue::new();
 
-        // Add work up to limit
-        for i in 1..=2 {
+        // Add many work items without any limit
+        for i in 1..=1000 {
             let file_info =
                 create_test_file_info(&format!("hash{}", i), &format!("./data/test{}.csv", i));
             let result = queue.add_work(file_info).await;
             assert!(result.is_ok());
         }
 
-        // Adding beyond limit should fail
-        let file_info = create_test_file_info("hash3", "./data/test3.csv");
-        let result = queue.add_work(file_info).await;
-        assert!(result.is_err());
-
-        if let Err(DownloadError::QueueFull {
-            current_size,
-            max_size,
-        }) = result
-        {
-            assert_eq!(current_size, 2);
-            assert_eq!(max_size, 2);
-        } else {
-            panic!("Expected QueueFull error");
-        }
+        // Check that all items were added
+        let stats = queue.stats().await;
+        assert_eq!(stats.total_added, 1000);
+        assert_eq!(stats.pending_count, 1000);
     }
 
     /// Test timeout handling

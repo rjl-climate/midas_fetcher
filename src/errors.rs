@@ -117,13 +117,6 @@ pub enum DownloadError {
     #[error("Incomplete download: received {received} bytes, expected {expected} bytes")]
     IncompleteDownload { received: u64, expected: u64 },
 
-    /// Work queue is full
-    #[error("Work queue is full: {current_size}/{max_size} items")]
-    QueueFull {
-        current_size: usize,
-        max_size: usize,
-    },
-
     /// Work item not found in queue
     #[error("Work item not found: {work_id}")]
     WorkNotFound { work_id: String },

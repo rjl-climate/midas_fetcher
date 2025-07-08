@@ -142,8 +142,6 @@ pub struct WorkQueueConfigToml {
     pub max_workers: u32,
     /// Work timeout in seconds
     pub work_timeout_secs: u64,
-    /// Maximum pending items
-    pub max_pending_items: usize,
 }
 
 impl Default for WorkQueueConfigToml {
@@ -153,7 +151,6 @@ impl Default for WorkQueueConfigToml {
             retry_delay_ms: 1000,
             max_workers: workers::DEFAULT_WORKER_COUNT as u32,
             work_timeout_secs: 300,
-            max_pending_items: 1_000_000,
         }
     }
 }
@@ -465,7 +462,6 @@ max_retries = 3
 retry_delay_ms = 1000
 max_workers = {}
 work_timeout_secs = 300
-max_pending_items = 1000000
 
 [manifest]
 # Manifest processing settings  
@@ -544,7 +540,6 @@ impl WorkQueueConfigToml {
             retry_delay: Duration::from_millis(self.retry_delay_ms),
             max_workers: self.max_workers,
             work_timeout: Duration::from_secs(self.work_timeout_secs),
-            max_pending_items: self.max_pending_items,
         }
     }
 }
@@ -677,7 +672,6 @@ max_retries = 3
 retry_delay_ms = 1000
 max_workers = 8
 work_timeout_secs = 300
-max_pending_items = 1000000
 
 [manifest]
 destination_root = "./cache"

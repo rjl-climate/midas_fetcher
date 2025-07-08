@@ -189,9 +189,6 @@ pub mod workers {
     /// Timeout for work items (if worker doesn't report progress)
     pub const WORK_TIMEOUT: Duration = Duration::from_secs(300);
 
-    /// Maximum number of pending items in queue (memory limit)
-    pub const MAX_PENDING_ITEMS: usize = 500_000;
-
     /// Default priority for work items
     pub const DEFAULT_PRIORITY: u32 = 100;
 

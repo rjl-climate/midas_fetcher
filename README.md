@@ -259,7 +259,7 @@ Increase these if you have a slow connection or are downloading large files.
 **Advanced settings you should NOT modify without expertise:**
 - HTTP/2 settings (`http2`, `tcp_nodelay`, `pool_*`)
 - Retry mechanisms (`max_retries`, `retry_*`)
-- Queue management (`max_pending_items`, `work_timeout_secs`)
+- Queue management (`work_timeout_secs`)
 - Progress reporting intervals
 - Manifest processing settings
 
