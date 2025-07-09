@@ -38,11 +38,11 @@ impl StatsManager {
     pub async fn update_stats(&self, stats: QueueStats) {
         let mut cache = self.cache.write().await;
         *cache = stats;
-        
+
         // Mark cache as clean
         let mut dirty = self.cache_dirty.write().await;
         *dirty = false;
-        
+
         debug!("Updated statistics cache");
     }
 
@@ -61,10 +61,10 @@ impl StatsManager {
     pub async fn reset(&self) {
         let mut cache = self.cache.write().await;
         *cache = QueueStats::new();
-        
+
         let mut dirty = self.cache_dirty.write().await;
         *dirty = false;
-        
+
         debug!("Reset statistics cache");
     }
 }
@@ -80,6 +80,7 @@ pub struct StatsCalculator;
 
 impl StatsCalculator {
     /// Calculate comprehensive statistics from queue state
+    #[allow(clippy::too_many_arguments)]
     pub fn calculate_stats(
         pending_count: usize,
         in_progress_count: usize,
@@ -134,7 +135,7 @@ impl StatsCalculator {
 
         // Weight different factors
         let health = (success_rate * 0.5) + (utilization * 0.3) + ((100.0 - active_ratio) * 0.2);
-        health.min(100.0).max(0.0)
+        health.clamp(0.0, 100.0)
     }
 }
 
@@ -203,7 +204,7 @@ impl StatsReporter {
     /// Generate a summary report
     pub fn generate_summary_report(stats: &QueueStats, max_workers: u32) -> String {
         let health_score = StatsCalculator::calculate_health_score(stats, max_workers);
-        
+
         format!(
             "Queue Statistics Summary:\n\
             ├─ Total Added: {}\n\
@@ -218,10 +219,10 @@ impl StatsReporter {
             └─ Health Score: {:.1}/100",
             stats.total_added,
             stats.completed_count,
-            if stats.total_added > 0 { 
-                (stats.completed_count as f64 / stats.total_added as f64) * 100.0 
-            } else { 
-                0.0 
+            if stats.total_added > 0 {
+                (stats.completed_count as f64 / stats.total_added as f64) * 100.0
+            } else {
+                0.0
             },
             stats.failed_count,
             stats.abandoned_count,
@@ -236,12 +237,12 @@ impl StatsReporter {
 
     /// Generate a detailed report
     pub fn generate_detailed_report(
-        stats: &QueueStats, 
-        max_workers: u32, 
-        performance: &PerformanceMetrics
+        stats: &QueueStats,
+        max_workers: u32,
+        performance: &PerformanceMetrics,
     ) -> String {
         let summary = Self::generate_summary_report(stats, max_workers);
-        
+
         format!(
             "{}\n\n\
             Performance Metrics:\n\
@@ -288,26 +289,26 @@ mod tests {
     #[tokio::test]
     async fn test_stats_manager_operations() {
         let manager = StatsManager::new();
-        
+
         // Initial state
         let initial_stats = manager.get_stats().await;
         assert_eq!(initial_stats.total_added, 0);
         assert!(!manager.is_dirty().await);
-        
+
         // Update stats
         let mut new_stats = QueueStats::new();
         new_stats.total_added = 100;
         new_stats.completed_count = 80;
-        
+
         manager.update_stats(new_stats.clone()).await;
         let updated_stats = manager.get_stats().await;
         assert_eq!(updated_stats.total_added, 100);
         assert_eq!(updated_stats.completed_count, 80);
-        
+
         // Mark dirty
         manager.mark_dirty().await;
         assert!(manager.is_dirty().await);
-        
+
         // Reset
         manager.reset().await;
         let reset_stats = manager.get_stats().await;
@@ -318,16 +319,16 @@ mod tests {
     #[test]
     fn test_stats_calculator() {
         let stats = StatsCalculator::calculate_stats(
-            10, // pending
-            5,  // in_progress
-            80, // completed
-            3,  // failed
-            2,  // abandoned
+            10,  // pending
+            5,   // in_progress
+            80,  // completed
+            3,   // failed
+            2,   // abandoned
             100, // total_added
-            5,  // duplicate_count
+            5,   // duplicate_count
             Utc::now(),
         );
-        
+
         assert_eq!(stats.pending_count, 10);
         assert_eq!(stats.in_progress_count, 5);
         assert_eq!(stats.completed_count, 80);
@@ -360,9 +361,9 @@ mod tests {
         stats.abandoned_count = 10;
         stats.in_progress_count = 5;
         stats.pending_count = 5;
-        
+
         let health = StatsCalculator::calculate_health_score(&stats, 10);
-        assert!(health >= 0.0 && health <= 100.0);
+        assert!((0.0..=100.0).contains(&health));
     }
 
     #[test]
@@ -375,9 +376,9 @@ mod tests {
             pending_count: 5,
             ..QueueStats::new()
         };
-        
+
         let performance = PerformanceMetrics::calculate_from_stats(&stats, Duration::from_secs(60));
-        
+
         assert!(performance.items_per_second > 0.0);
         assert!(performance.memory_usage_mb >= 0.0);
     }
@@ -394,12 +395,12 @@ mod tests {
             duplicate_count: 2,
             ..QueueStats::new()
         };
-        
+
         let summary = StatsReporter::generate_summary_report(&stats, 10);
         assert!(summary.contains("Total Added: 100"));
         assert!(summary.contains("Completed: 80"));
         assert!(summary.contains("Success Rate:"));
-        
+
         let compact = StatsReporter::generate_compact_status(&stats);
         assert!(compact.contains("100 total"));
         assert!(compact.contains("80 completed"));

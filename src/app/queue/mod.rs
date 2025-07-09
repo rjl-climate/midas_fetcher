@@ -19,19 +19,25 @@
 //! ```rust,no_run
 //! use midas_fetcher::app::queue::WorkQueue;
 //! use midas_fetcher::app::models::FileInfo;
+//! use midas_fetcher::app::hash::Md5Hash;
+//! use std::path::Path;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create a queue with default configuration
 //! let queue = WorkQueue::new();
 //!
 //! // Add work to the queue
-//! let file_info = FileInfo::new(hash, path, cache_dir, None)?;
+//! let hash = Md5Hash::from_hex("50c9d1c465f3cbff652be1509c2e2a4e")?;
+//! let path = "./data/uk-daily-temperature-obs/test.csv";
+//! let cache_dir = Path::new("/tmp/cache");
+//! let file_info = FileInfo::new(hash, path.to_string(), cache_dir, None)?;
 //! queue.add_work(file_info).await?;
 //!
 //! // Workers can claim work
 //! while let Some(work) = queue.get_next_work().await {
-//!     // Process the work...
-//!     match process_work(&work).await {
+//!     // Simulate processing the work...
+//!     let processing_result: Result<(), String> = Ok(());
+//!     match processing_result {
 //!         Ok(_) => {
 //!             queue.mark_completed(work.work_id()).await?;
 //!         }
@@ -109,7 +115,7 @@ pub use types::WorkInfo as Work;
 /// Priority levels for work items
 pub mod priority {
     pub use super::config::Priority;
-    
+
     /// Convenience constants for common priority levels
     pub const URGENT: u32 = 300;
     pub const HIGH: u32 = Priority::HIGH;
@@ -181,12 +187,12 @@ impl Default for WorkQueueBuilder {
 pub mod utils {
     use super::*;
     use crate::app::models::FileInfo;
-    
+
     /// Create a work queue optimized for testing
     pub fn create_test_queue() -> WorkQueue {
         WorkQueue::with_config(ConfigPresets::testing())
     }
-    
+
     /// Add multiple files to queue with progress tracking
     pub async fn add_files_with_progress<F>(
         queue: &WorkQueue,
@@ -198,40 +204,40 @@ pub mod utils {
     {
         let total = files.len();
         let mut added = 0;
-        
+
         for (i, file) in files.into_iter().enumerate() {
             if queue.add_work(file).await? {
                 added += 1;
             }
             progress_callback(i + 1, total);
         }
-        
+
         Ok(added)
     }
-    
+
     /// Wait for queue to finish with timeout
     pub async fn wait_for_completion(
         queue: &WorkQueue,
         timeout: std::time::Duration,
     ) -> QueueResult<bool> {
         let start = std::time::Instant::now();
-        
+
         while !queue.is_finished().await {
             if start.elapsed() > timeout {
                 return Ok(false);
             }
-            
+
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        
+
         Ok(true)
     }
-    
+
     /// Get detailed queue health information
     pub async fn get_queue_health(queue: &WorkQueue) -> QueueHealth {
         let stats = queue.stats().await;
         let config = queue.config();
-        
+
         QueueHealth {
             is_healthy: stats.success_rate() > 80.0,
             utilization: stats.worker_utilization(config.max_workers),
@@ -263,11 +269,15 @@ mod integration_tests {
     use tempfile::TempDir;
     use tokio::time::sleep;
 
-    fn create_test_file_info(hash: &str, path: &str) -> FileInfo {
+    fn create_test_file_info(hash: &str, station: &str) -> FileInfo {
         let temp_dir = TempDir::new().unwrap();
         let valid_hash = format!("{:0<32}", hash);
         let hash_obj = crate::app::hash::Md5Hash::from_hex(&valid_hash).unwrap();
-        FileInfo::new(hash_obj, path.to_string(), temp_dir.path(), None).unwrap()
+        let path = format!(
+            "./data/uk-daily-temperature-obs/dataset-version-202407/devon/{}_twist/qc-version-1/midas-open_uk-daily-temperature-obs_dv-202407_devon_{}_twist_qcv-1_1980.csv",
+            station, station
+        );
+        FileInfo::new(hash_obj, path, temp_dir.path(), None).unwrap()
     }
 
     #[tokio::test]
@@ -293,13 +303,22 @@ mod integration_tests {
         let queue = WorkQueue::new();
 
         // Add work with different priorities
-        let high_priority_file = create_test_file_info("1", "./data/high.csv");
-        let normal_priority_file = create_test_file_info("2", "./data/normal.csv");
-        let low_priority_file = create_test_file_info("3", "./data/low.csv");
+        let high_priority_file = create_test_file_info("1", "01381");
+        let normal_priority_file = create_test_file_info("2", "01382");
+        let low_priority_file = create_test_file_info("3", "01383");
 
-        queue.add_work_with_priority(high_priority_file, priority::HIGH).await.unwrap();
-        queue.add_work_with_priority(normal_priority_file, priority::NORMAL).await.unwrap();
-        queue.add_work_with_priority(low_priority_file, priority::LOW).await.unwrap();
+        queue
+            .add_work_with_priority(high_priority_file, priority::HIGH)
+            .await
+            .unwrap();
+        queue
+            .add_work_with_priority(normal_priority_file, priority::NORMAL)
+            .await
+            .unwrap();
+        queue
+            .add_work_with_priority(low_priority_file, priority::LOW)
+            .await
+            .unwrap();
 
         let stats = queue.stats().await;
         assert_eq!(stats.pending_count, 3);
@@ -338,7 +357,9 @@ mod integration_tests {
         let added = utils::add_files_with_progress(&queue, files, |current, total| {
             progress_calls += 1;
             assert!(current <= total);
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         assert_eq!(added, 3);
         assert_eq!(progress_calls, 3);
@@ -369,7 +390,7 @@ mod integration_tests {
         for i in 0..10 {
             let queue_clone = Arc::clone(&queue);
             let handle = tokio::spawn(async move {
-                let file = create_test_file_info(&format!("{}", i), &format!("./data/test{}.csv", i));
+                let file = create_test_file_info(&format!("{}", i), &format!("0138{}", i));
                 queue_clone.add_work(file).await
             });
             add_handles.push(handle);
@@ -383,11 +404,11 @@ mod integration_tests {
                 while let Some(work) = queue_clone.get_next_work().await {
                     // Simulate processing
                     sleep(Duration::from_millis(1)).await;
-                    
+
                     // Mark as completed
                     queue_clone.mark_completed(work.work_id()).await.unwrap();
                     processed += 1;
-                    
+
                     if processed >= 3 {
                         break;
                     }
@@ -426,7 +447,7 @@ mod integration_tests {
 
         let stats = queue.stats().await;
         let report = StatsReporter::generate_summary_report(&stats, 8);
-        
+
         assert!(report.contains("Total Added: 1"));
         assert!(report.contains("Completed: 1"));
         assert!(report.contains("Success Rate:"));

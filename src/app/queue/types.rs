@@ -359,7 +359,7 @@ mod tests {
             last_failure: past_time,
             error: "Test error".to_string(),
         };
-        
+
         assert!(status.is_ready_for_retry(Duration::from_secs(30)));
         assert!(!status.is_ready_for_retry(Duration::from_secs(120)));
     }
@@ -368,7 +368,7 @@ mod tests {
     fn test_work_info_creation() {
         let file_info = create_test_file_info();
         let work = WorkInfo::new(file_info, 100);
-        
+
         assert_eq!(work.priority, 100);
         assert!(work.status.is_pending());
         assert!(work.is_available(Duration::from_secs(1)));
@@ -378,11 +378,11 @@ mod tests {
     fn test_work_info_state_transitions() {
         let file_info = create_test_file_info();
         let mut work = WorkInfo::new(file_info, 100);
-        
+
         // Mark as in progress
         work.mark_in_progress(1);
         assert!(work.is_in_progress());
-        
+
         // Mark as completed
         work.mark_completed();
         assert!(work.is_completed());
@@ -392,17 +392,17 @@ mod tests {
     fn test_work_info_failure_handling() {
         let file_info = create_test_file_info();
         let mut work = WorkInfo::new(file_info, 100);
-        
+
         // First failure
         work.mark_failed("Error 1".to_string(), 3);
         assert!(work.is_failed());
         assert_eq!(work.status.failure_count(), 1);
-        
+
         // Second failure
         work.mark_failed("Error 2".to_string(), 3);
         assert!(work.is_failed());
         assert_eq!(work.status.failure_count(), 2);
-        
+
         // Final failure (abandon)
         work.mark_failed("Error 3".to_string(), 3);
         assert!(work.is_abandoned());
@@ -413,7 +413,7 @@ mod tests {
     fn test_config_validation() {
         let valid_config = WorkQueueConfig::new();
         assert!(valid_config.validate().is_ok());
-        
+
         let invalid_config = WorkQueueConfig {
             max_retries: 0,
             ..WorkQueueConfig::new()
@@ -429,7 +429,7 @@ mod tests {
         stats.pending_count = 10;
         stats.in_progress_count = 5;
         stats.failed_count = 3;
-        
+
         assert_eq!(stats.success_rate(), 80.0);
         assert_eq!(stats.active_count(), 18);
         assert_eq!(stats.worker_utilization(10), 50.0);

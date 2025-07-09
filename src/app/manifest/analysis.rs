@@ -60,12 +60,21 @@ pub async fn collect_datasets_and_years<P: AsRef<Path>>(
                 example_file: None,
             });
 
-        // Update file count
-        entry.file_count += 1;
+        // Apply default QC version filtering - only count QC version 1 files and non-QC files
+        // This matches the default download behavior
+        let should_count = match &dataset_info.quality_version {
+            Some(qv) => qv == &QualityControlVersion::V1, // Only count QC version 1
+            None => true, // Always count non-QC files (capability files, etc.)
+        };
 
-        // Set example file if not already set
-        if entry.example_file.is_none() {
-            entry.example_file = Some(file_info.relative_path.clone());
+        if should_count {
+            // Update file count
+            entry.file_count += 1;
+
+            // Set example file if not already set
+            if entry.example_file.is_none() {
+                entry.example_file = Some(file_info.relative_path.clone());
+            }
         }
 
         // Collect complete dataset version strings

@@ -46,10 +46,10 @@ mod integration_tests {
         while let Some(work) = queue.get_next_work().await {
             // Simulate processing
             sleep(Duration::from_millis(1)).await;
-            
+
             queue.mark_completed(work.work_id()).await.unwrap();
             completed += 1;
-            
+
             if completed >= 3 {
                 break;
             }
@@ -75,13 +75,19 @@ mod integration_tests {
         let file_hash = file.hash;
         queue.add_work(file).await.unwrap();
 
-        // Get and fail work multiple times
-        for attempt in 1..=3 {
-            let work = queue.get_next_work().await.unwrap();
+        // Get and fail work multiple times (max_retries = 2)
+        for attempt in 1..=2 {
+            let work = queue
+                .get_next_work()
+                .await
+                .expect("Work should be available");
             assert_eq!(work.work_id(), &file_hash);
-            
-            queue.mark_failed(&file_hash, &format!("Error {}", attempt)).await.unwrap();
-            
+
+            queue
+                .mark_failed(&file_hash, &format!("Error {}", attempt))
+                .await
+                .unwrap();
+
             // Wait for retry delay
             sleep(Duration::from_millis(15)).await;
         }
@@ -89,7 +95,7 @@ mod integration_tests {
         // Should be abandoned after max retries
         let work_info = queue.get_work_info(&file_hash).await.unwrap();
         assert!(work_info.is_abandoned());
-        
+
         let stats = queue.stats().await;
         assert_eq!(stats.abandoned_count, 1);
         assert!(queue.is_finished().await);
@@ -104,7 +110,7 @@ mod integration_tests {
 
         // Add work items
         for i in 0..(worker_count * work_per_worker) {
-            let file = create_test_file_info(&format!("{}", i), &format!("./data/test{}.csv", i));
+            let file = create_test_file_info(&format!("{:032}", i), &format!("{:05}", i));
             queue.add_work(file).await.unwrap();
         }
 
@@ -114,25 +120,28 @@ mod integration_tests {
             let queue_clone = Arc::clone(&queue);
             let handle = tokio::spawn(async move {
                 let mut processed = 0;
-                
+
                 while let Some(work) = queue_clone.get_next_work().await {
                     // Simulate work processing
                     sleep(Duration::from_millis(1)).await;
-                    
+
                     // Randomly succeed or fail (90% success rate)
                     if processed % 10 == 0 {
-                        queue_clone.mark_failed(work.work_id(), "Simulated error").await.unwrap();
+                        queue_clone
+                            .mark_failed(work.work_id(), "Simulated error")
+                            .await
+                            .unwrap();
                     } else {
                         queue_clone.mark_completed(work.work_id()).await.unwrap();
                     }
-                    
+
                     processed += 1;
-                    
+
                     if processed >= work_per_worker {
                         break;
                     }
                 }
-                
+
                 processed
             });
             handles.push(handle);
@@ -183,29 +192,26 @@ mod integration_tests {
     #[tokio::test]
     async fn test_capacity_management() {
         // Test capacity and backpressure
-        let config = WorkQueueConfigBuilder::new()
-            .max_pending_items(5)
-            .build();
+        let config = WorkQueueConfigBuilder::new().max_pending_items(5).build();
         let queue = WorkQueue::with_config(config);
 
-        // Fill up to capacity
-        for i in 0..5 {
-            let file = create_test_file_info(&format!("{}", i), &format!("./data/test{}.csv", i));
+        // Fill up to near capacity
+        for i in 0..4 {
+            let file = create_test_file_info(&format!("{:032}", i), &format!("{:05}", i));
             queue.add_work(file).await.unwrap();
         }
 
         // Should still have capacity (not at limit yet)
         assert!(queue.has_capacity().await);
 
-        // Add more work to exceed capacity
-        for i in 5..10 {
-            let file = create_test_file_info(&format!("{}", i), &format!("./data/test{}.csv", i));
-            queue.add_work(file).await.unwrap();
-        }
+        // Add one more to reach capacity
+        let file = create_test_file_info(&format!("{:032}", 4), &format!("{:05}", 4));
+        queue.add_work(file).await.unwrap();
 
         // Should be at capacity now
+        assert!(!queue.has_capacity().await);
         let stats = queue.stats().await;
-        assert_eq!(stats.pending_count, 10);
+        assert_eq!(stats.pending_count, 5);
     }
 
     #[tokio::test]
@@ -251,7 +257,7 @@ mod integration_tests {
 
         // Create many file infos
         let files: Vec<FileInfo> = (0..1000)
-            .map(|i| create_test_file_info(&format!("{}", i), &format!("./data/test{}.csv", i)))
+            .map(|i| create_test_file_info(&format!("{:032}", i), &format!("{:05}", i)))
             .collect();
 
         // Bulk add should be faster than individual adds
@@ -260,7 +266,7 @@ mod integration_tests {
         let bulk_duration = start.elapsed();
 
         assert_eq!(added, 1000);
-        
+
         // Bulk operation should complete in reasonable time
         assert!(bulk_duration < Duration::from_secs(1));
 
@@ -276,9 +282,9 @@ mod integration_tests {
 
         // Add and complete work
         for i in 0..100 {
-            let file = create_test_file_info(&format!("{}", i), &format!("./data/test{}.csv", i));
+            let file = create_test_file_info(&format!("{:032}", i), &format!("{:05}", i));
             queue.add_work(file).await.unwrap();
-            
+
             let work = queue.get_next_work().await.unwrap();
             queue.mark_completed(work.work_id()).await.unwrap();
         }
@@ -292,7 +298,7 @@ mod integration_tests {
 
         let stats_after = queue.stats().await;
         assert_eq!(stats_after.completed_count, 100); // Count preserved
-        
+
         // But internal storage should be cleaned
         let all_work = queue.get_all_work().await;
         assert!(all_work.is_empty());
@@ -308,9 +314,18 @@ mod integration_tests {
         let high_file = create_test_file_info("2", "01382");
         let normal_file = create_test_file_info("3", "01383");
 
-        queue.add_work_with_priority(low_file, priority::LOW).await.unwrap();
-        queue.add_work_with_priority(high_file, priority::HIGH).await.unwrap();
-        queue.add_work_with_priority(normal_file, priority::NORMAL).await.unwrap();
+        queue
+            .add_work_with_priority(low_file, priority::LOW)
+            .await
+            .unwrap();
+        queue
+            .add_work_with_priority(high_file, priority::HIGH)
+            .await
+            .unwrap();
+        queue
+            .add_work_with_priority(normal_file, priority::NORMAL)
+            .await
+            .unwrap();
 
         // For now, we just verify all items are in the queue
         // Priority ordering would require more complex implementation

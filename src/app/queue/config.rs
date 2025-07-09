@@ -216,14 +216,18 @@ impl ConfigLoader {
     }
 
     /// Load configuration from file
-    pub fn from_file(path: &std::path::Path) -> Result<super::types::WorkQueueConfig, Box<dyn std::error::Error>> {
+    pub fn from_file(
+        path: &std::path::Path,
+    ) -> Result<super::types::WorkQueueConfig, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
         let config: QueueConfigFile = toml::from_str(&content)?;
         Ok(config.into())
     }
 
     /// Load configuration with precedence: file -> env -> defaults
-    pub fn load_with_precedence(config_file: Option<&std::path::Path>) -> super::types::WorkQueueConfig {
+    pub fn load_with_precedence(
+        config_file: Option<&std::path::Path>,
+    ) -> super::types::WorkQueueConfig {
         let mut config = ConfigPresets::production();
 
         // Override with file if provided
@@ -341,16 +345,19 @@ mod tests {
         let config = ConfigPresets::production();
         assert!(config.validate().is_ok());
 
-        let invalid_config = WorkQueueConfigBuilder::new()
-            .max_retries(0)
-            .build();
+        let invalid_config = WorkQueueConfigBuilder::new().max_retries(0).build();
         assert!(invalid_config.validate().is_err());
     }
 
     #[test]
     fn test_priority_constants() {
-        assert!(Priority::HIGH > Priority::DEFAULT);
-        assert!(Priority::DEFAULT > Priority::LOW);
+        // Test that priority constants are properly ordered
+        let high = Priority::HIGH;
+        let default = Priority::DEFAULT;
+        let low = Priority::LOW;
+
+        assert!(high > default);
+        assert!(default > low);
     }
 
     #[test]

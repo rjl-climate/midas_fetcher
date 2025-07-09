@@ -88,10 +88,29 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
         manifest_path.display(),
         manifest_start.elapsed()
     );
+
+    // Check if we're using a different version than expected and notify user
+    let (actual_expected_files, version_notification) = check_version_compatibility_and_notify(
+        &temp_manifest_path, // Version shown in table
+        &manifest_path,      // Version actually being used
+        &selected_dataset,
+        expected_files,
+        args.county.as_deref(),
+        &quality_version,
+    )
+    .await?;
+
+    // Show version notification if there was a fallback
+    if let Some(notification) = version_notification {
+        println!();
+        println!("ℹ️  {}", notification);
+        println!();
+    }
+
     info!(
         "Dataset selection completed in {:?} - expecting {} files",
         selection_start.elapsed(),
-        expected_files
+        actual_expected_files
     );
 
     // Filter files based on criteria with progress feedback
@@ -248,9 +267,9 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
 
     // Apply limit to expected files if specified
     let final_expected_files = if let Some(limit) = args.limit {
-        expected_files.min(limit)
+        actual_expected_files.min(limit)
     } else {
-        expected_files
+        actual_expected_files
     };
 
     // Setup coordinator
@@ -1412,6 +1431,95 @@ async fn find_manifest_file_for_dataset(dataset: &str, args: &DownloadArgs) -> R
             find_any_manifest_file().await
         }
     }
+}
+
+/// Check version compatibility and notify user of any fallback
+///
+/// Returns (actual_file_count, notification_message)
+async fn check_version_compatibility_and_notify(
+    table_manifest_path: &Path,    // Manifest used for table display
+    download_manifest_path: &Path, // Manifest being used for download
+    dataset: &str,
+    estimated_files: usize,
+    county: Option<&str>,
+    quality_version: &crate::app::models::QualityControlVersion,
+) -> Result<(usize, Option<String>)> {
+    use crate::app::ManifestStreamer;
+
+    info!(
+        "DEBUG: check_version_compatibility_and_notify called for dataset: {}",
+        dataset
+    );
+
+    // Extract versions from both manifest filenames
+    let table_version = ManifestStreamer::extract_manifest_version_from_path(table_manifest_path);
+    let download_version =
+        ManifestStreamer::extract_manifest_version_from_path(download_manifest_path);
+
+    info!(
+        "Table manifest: {} (version: {:?})",
+        table_manifest_path.display(),
+        table_version
+    );
+    info!(
+        "Download manifest: {} (version: {:?})",
+        download_manifest_path.display(),
+        download_version
+    );
+
+    // Compare the two versions
+    match (table_version, download_version) {
+        (Some(table_ver), Some(download_ver)) if table_ver != download_ver => {
+            // Version mismatch - recalculate file count using the download manifest
+            // Use the SAME filtering logic as downloads to ensure consistency
+            let actual_files = calculate_exact_download_count(
+                download_manifest_path,
+                dataset,
+                county,
+                quality_version,
+            )
+            .await
+            .unwrap_or(estimated_files);
+
+            let notification = format!(
+                "Dataset '{}' version {} not available. Downloading version {} instead ({} files).",
+                dataset,
+                table_ver,
+                download_ver,
+                crate::cli::startup::format_number_with_commas(actual_files)
+            );
+
+            Ok((actual_files, Some(notification)))
+        }
+        _ => {
+            // No version mismatch or can't determine versions - use original estimate
+            Ok((estimated_files, None))
+        }
+    }
+}
+
+/// Calculate exact file count using the same logic as downloads
+/// This ensures the notification count matches what will actually be downloaded
+async fn calculate_exact_download_count(
+    manifest_path: &Path,
+    dataset: &str,
+    county: Option<&str>,
+    quality_version: &crate::app::models::QualityControlVersion,
+) -> Result<usize> {
+    use crate::app::filter_manifest_files;
+
+    info!("Calculating download count using fixed complex filtering");
+
+    // Use the same filtering logic as downloads (now fixed to handle QC versions correctly)
+    let filtered_files =
+        filter_manifest_files(manifest_path, Some(dataset), county, quality_version)
+            .await
+            .map_err(AppError::Manifest)?;
+
+    let count = filtered_files.len();
+    info!("Download count: {} files", count);
+
+    Ok(count)
 }
 
 /// Get the latest dataset version from the dataset's index page

@@ -9,12 +9,13 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::app::hash::Md5Hash;
 use crate::errors::{ManifestError, ManifestResult};
 
 /// Quality control version for MIDAS data files
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum QualityControlVersion {
     /// Quality control version 0 (qcv-0)
     V0,
@@ -186,6 +187,9 @@ impl DatasetFileInfo {
                     if component.starts_with("qc-version-") {
                         // This is a quality version directory
                         quality_version = QualityControlVersion::from_directory_name(component);
+                        if dataset_name == "uk-daily-rain-obs" {
+                            debug!("QC dir parsing: {} -> {:?}", component, quality_version);
+                        }
                     } else if component.ends_with(".csv") {
                         // This is a filename (capability file without quality version)
                         let filename = *component;
@@ -194,6 +198,25 @@ impl DatasetFileInfo {
                         // Pattern: ..._{YYYY}.csv
                         if let Some(stem) = filename.strip_suffix(".csv") {
                             let parts: Vec<&str> = stem.split('_').collect();
+
+                            // Check if this is actually a QC file based on filename pattern
+                            if filename.contains("qcv-") {
+                                // Extract QC version from filename
+                                for part in &parts {
+                                    if part.starts_with("qcv-") {
+                                        quality_version =
+                                            QualityControlVersion::from_filename_format(part);
+                                        if dataset_name == "uk-daily-rain-obs" {
+                                            debug!(
+                                                "QC filename parsing: {} -> {:?}",
+                                                part, quality_version
+                                            );
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+
                             for part in parts.iter().rev() {
                                 if part.len() == 4 && part.chars().all(|c| c.is_ascii_digit()) {
                                     year = Some(part.to_string());
@@ -248,6 +271,29 @@ impl DatasetFileInfo {
             }
         }
 
+        // Final attempt: Extract QC version from filename if not found in directory structure
+        if quality_version.is_none() {
+            // Get the filename from the last component
+            if let Some(filename) = components.last() {
+                if filename.contains("qcv-") {
+                    // Extract QC version from filename
+                    let parts: Vec<&str> = filename.split('_').collect();
+                    for part in &parts {
+                        if part.starts_with("qcv-") {
+                            quality_version = QualityControlVersion::from_filename_format(part);
+                            if dataset_name == "uk-daily-rain-obs" {
+                                debug!(
+                                    "Final QC extraction from filename: {} -> {:?}",
+                                    part, quality_version
+                                );
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // Validate required fields
         if dataset_name.is_empty() {
             return Err(ManifestError::InvalidPath {
@@ -296,13 +342,33 @@ impl DatasetFileInfo {
             String::new()
         };
 
+        // Extract quality version from filename if present
+        let mut quality_version = None;
+        if let Some(filename) = components.last() {
+            if filename.contains("qcv-") {
+                let parts: Vec<&str> = filename.split('_').collect();
+                for part in &parts {
+                    if part.starts_with("qcv-") {
+                        quality_version = QualityControlVersion::from_filename_format(part);
+                        if dataset_name == "uk-daily-rain-obs" {
+                            debug!(
+                                "Special file QC extraction: {} -> {:?}",
+                                part, quality_version
+                            );
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         Ok(DatasetFileInfo {
             dataset_name,
             version,
             county: None,
             station_id: None,
             station_name: None,
-            quality_version: None,
+            quality_version,
             year: None,
             file_type: Some(file_type),
         })

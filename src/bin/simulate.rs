@@ -757,6 +757,8 @@ async fn run_simulation() -> Result<(), Box<dyn std::error::Error>> {
         retry_delay: Duration::from_secs(1), // Faster retries for simulation
         max_workers: config.worker_count as u32,
         work_timeout: Duration::from_secs(30),
+        max_pending_items: 10_000,
+        default_priority: 100,
     };
     let queue = Arc::new(WorkQueue::with_config(queue_config));
 

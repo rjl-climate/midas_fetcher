@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use tracing::debug;
 
-use crate::app::hash::Md5Hash;
 use super::types::{QueueStats, WorkInfo, WorkStatus};
+use crate::app::hash::Md5Hash;
 
 /// Internal state of the work queue
 #[derive(Debug)]
@@ -68,13 +68,13 @@ impl QueueState {
 
         // Insert work item
         self.work_items.insert(work_id, work_info);
-        
+
         // Add to pending queue
         self.add_to_pending(work_id);
-        
+
         // Update statistics
         self.stats.total_added += 1;
-        
+
         debug!("Added work to queue: {}", work_id);
         Ok(())
     }
@@ -117,15 +117,20 @@ impl QueueState {
     }
 
     /// Mark work as failed
-    pub fn mark_failed(&mut self, work_id: &Md5Hash, error: &str, max_retries: u32) -> Result<(), String> {
+    pub fn mark_failed(
+        &mut self,
+        work_id: &Md5Hash,
+        error: &str,
+        max_retries: u32,
+    ) -> Result<(), String> {
         if let Some(work_info) = self.work_items.get_mut(work_id) {
             work_info.mark_failed(error.to_string(), max_retries);
-            
+
             // If it's still retryable, add back to pending
             if work_info.is_failed() {
                 self.add_to_pending(*work_id);
             }
-            
+
             debug!("Marked work failed: {} - {}", work_id, error);
             Ok(())
         } else {
@@ -150,7 +155,7 @@ impl QueueState {
     /// Find work items that have timed out
     pub fn find_timed_out_work(&self, timeout: std::time::Duration) -> Vec<Md5Hash> {
         use chrono::Utc;
-        
+
         let now = Utc::now();
         self.work_items
             .iter()
@@ -176,17 +181,16 @@ impl QueueState {
     /// Remove completed and abandoned work items
     pub fn cleanup(&mut self) -> usize {
         let initial_count = self.work_items.len();
-        
-        self.work_items.retain(|_, work_info| {
-            !work_info.is_completed() && !work_info.is_abandoned()
-        });
-        
+
+        self.work_items
+            .retain(|_, work_info| !work_info.is_completed() && !work_info.is_abandoned());
+
         let removed = initial_count - self.work_items.len();
-        
+
         if removed > 0 {
             debug!("Cleaned up {} completed/abandoned work items", removed);
         }
-        
+
         removed
     }
 
@@ -246,8 +250,8 @@ impl QueueState {
     pub fn is_finished(&self, retry_delay: std::time::Duration) -> bool {
         self.pending.is_empty()
             && !self.work_items.values().any(|work_info| {
-                work_info.is_in_progress() || 
-                (work_info.is_failed() && work_info.status.is_ready_for_retry(retry_delay))
+                work_info.is_in_progress()
+                    || (work_info.is_failed() && work_info.status.is_ready_for_retry(retry_delay))
             })
     }
 
@@ -343,7 +347,7 @@ mod tests {
 
         // First add should succeed
         assert!(state.add_work(work_info1).is_ok());
-        
+
         // Second add should fail
         assert!(state.add_work(work_info2).is_err());
     }
@@ -396,11 +400,20 @@ mod tests {
     #[test]
     fn test_bulk_add() {
         let mut state = QueueState::new();
-        
+
         let work_items = vec![
-            WorkInfo::new(create_test_file_info("50c9d1c465f3cbff652be1509c2e2a4e"), 100),
-            WorkInfo::new(create_test_file_info("60c9d1c465f3cbff652be1509c2e2a4e"), 100),
-            WorkInfo::new(create_test_file_info("70c9d1c465f3cbff652be1509c2e2a4e"), 100),
+            WorkInfo::new(
+                create_test_file_info("50c9d1c465f3cbff652be1509c2e2a4e"),
+                100,
+            ),
+            WorkInfo::new(
+                create_test_file_info("60c9d1c465f3cbff652be1509c2e2a4e"),
+                100,
+            ),
+            WorkInfo::new(
+                create_test_file_info("70c9d1c465f3cbff652be1509c2e2a4e"),
+                100,
+            ),
         ];
 
         let (added, duplicates) = state.add_work_bulk(work_items);

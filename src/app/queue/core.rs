@@ -86,17 +86,23 @@ impl WorkQueue {
 
         let result = {
             let mut state = self.state.lock().await;
-            
+
             // Check for duplicates
             if state.is_completed(&work_id) {
                 state.get_stats_mut().duplicate_count += 1;
                 debug!("Skipping duplicate completed work: {}", work_id);
+                let stats = state.get_stats().clone();
+                drop(state); // Release lock before async operation
+                self.stats_manager.update_stats(stats).await;
                 return Ok(false);
             }
 
             if state.contains_work(&work_id) {
                 state.get_stats_mut().duplicate_count += 1;
                 debug!("Skipping duplicate existing work: {}", work_id);
+                let stats = state.get_stats().clone();
+                drop(state); // Release lock before async operation
+                self.stats_manager.update_stats(stats).await;
                 return Ok(false);
             }
 
@@ -157,7 +163,10 @@ impl WorkQueue {
         // Log lock contention if high
         let lock_duration = lock_start.elapsed();
         if lock_duration > Duration::from_millis(10) {
-            debug!("Queue lock contention detected: {:?} wait time", lock_duration);
+            debug!(
+                "Queue lock contention detected: {:?} wait time",
+                lock_duration
+            );
         }
 
         // Try to get pending work first
@@ -186,23 +195,23 @@ impl WorkQueue {
     /// Claim work for a worker (internal helper)
     async fn claim_work(&self, state: &mut QueueState, work_id: Md5Hash) -> Option<WorkInfo> {
         let worker_id = state.next_worker_id();
-        
+
         if let Some(work_info) = state.get_work_mut(&work_id) {
             let mut claimed_work = work_info.clone();
             claimed_work.mark_in_progress(worker_id);
-            
+
             // Update the original work item
             work_info.mark_in_progress(worker_id);
-            
+
             debug!("Claimed work {} for worker {}", work_id, worker_id);
-            
+
             // Update statistics
             state.update_stats();
             let stats = state.get_stats().clone();
-            drop(state); // Release lock before async operation
-            
+            let _ = state; // Release lock before async operation
+
             self.stats_manager.update_stats(stats).await;
-            
+
             Some(claimed_work)
         } else {
             None
@@ -306,7 +315,7 @@ impl WorkQueue {
             let mut state = self.state.lock().await;
             state.reset();
         }
-        
+
         self.stats_manager.reset().await;
         info!("Reset work queue");
     }
@@ -316,10 +325,12 @@ impl WorkQueue {
         let timed_out = {
             let mut state = self.state.lock().await;
             let timeout_candidates = state.find_timed_out_work(self.config.work_timeout);
-            
+
             let mut count = 0;
             for work_id in timeout_candidates {
-                if let Err(e) = state.mark_failed(&work_id, "Worker timeout", self.config.max_retries) {
+                if let Err(e) =
+                    state.mark_failed(&work_id, "Worker timeout", self.config.max_retries)
+                {
                     warn!("Failed to mark work as timed out: {}", e);
                 } else {
                     count += 1;
@@ -481,8 +492,8 @@ mod tests {
         let file_hash = file_info.hash;
         queue.add_work(file_info).await.unwrap();
 
-        // Fail it multiple times
-        for i in 0..3 {
+        // Fail it until it's abandoned (max_retries = 2)
+        for i in 0..2 {
             if let Some(work) = queue.get_next_work().await {
                 queue
                     .mark_failed(work.work_id(), &format!("Error {}", i + 1))
@@ -490,7 +501,7 @@ mod tests {
                     .unwrap();
 
                 // Wait for retry delay
-                sleep(Duration::from_millis(2)).await;
+                sleep(Duration::from_millis(15)).await;
             } else {
                 break;
             }
@@ -547,7 +558,7 @@ mod tests {
 
         // Add and complete work
         let file_info = create_test_file_info("1", "01381");
-        let file_hash = file_info.hash;
+        let _file_hash = file_info.hash;
         queue.add_work(file_info).await.unwrap();
 
         let work = queue.get_next_work().await.unwrap();
@@ -591,10 +602,7 @@ mod tests {
         for i in 1..=5 {
             let queue_clone = Arc::clone(&queue);
             let handle = tokio::spawn(async move {
-                let file_info = create_test_file_info(
-                    &format!("{}", i),
-                    &format!("0138{}", i),
-                );
+                let file_info = create_test_file_info(&format!("{}", i), &format!("0138{}", i));
                 queue_clone.add_work(file_info).await
             });
             handles.push(handle);

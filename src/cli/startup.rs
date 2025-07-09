@@ -712,7 +712,7 @@ async fn calculate_filtered_file_count(
 }
 
 /// Format a number with commas as thousands separators
-fn format_number_with_commas(n: usize) -> String {
+pub fn format_number_with_commas(n: usize) -> String {
     let s = n.to_string();
     let mut result = String::new();
     let chars: Vec<char> = s.chars().collect();
