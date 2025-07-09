@@ -584,6 +584,14 @@ You may choose either license for your use.
 
 ## Changelog
 
+### v0.1.3 (July 2025) - Cache Module Refactoring & Missing Dataset Versions
+
+- **Enhanced dataset version handling**: Added support for missing dataset versions in manifest processing, allowing the tool to handle datasets with gaps in their version history
+- **Major cache module refactoring**: Transformed monolithic 1690-line cache.rs into a modular architecture with 6 focused modules for improved maintainability
+- **Improved worker ID generation**: Replaced thread-name-based worker IDs with proper sequential generation system
+- **Enhanced disk space calculation**: Added framework for cross-platform disk space monitoring
+- **Better code organization**: Unit tests now stay with their modules, integration tests properly separated
+
 ### v0.1.2 (July 2025) - UX Improvements & Queue Fix
 
 - **Fixed race condition**: Downloads no longer fail immediately due to coordinator completion detection treating empty queue as finished during startup
@@ -610,4 +618,4 @@ You may choose either license for your use.
 **Status**: Beta
 **Maintainer**: Richard Lyon richlyon@fastmail.com
 **First Release**: 2025
-**Latest Update**: July 2025 (v0.1.2)
+**Latest Update**: July 2025 (v0.1.3)
