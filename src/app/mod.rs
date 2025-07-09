@@ -77,7 +77,7 @@ pub use manifest::{
 pub use models::{
     generate_file_id, parse_manifest_line, DatasetFileInfo, FileInfo, QualityControlVersion,
 };
-pub use queue::{QueueStats, WorkInfo, WorkQueue, WorkQueueConfig, WorkStatus};
+pub use queue::{QueueStats, WorkInfo, WorkQueue, WorkQueueConfig, WorkStatus, ConfigPresets, StatsReporter};
 pub use worker::{
     DownloadWorker, WorkerConfig, WorkerPool, WorkerPoolStats, WorkerProgress, WorkerStatus,
 };

@@ -129,6 +129,10 @@ pub enum DownloadError {
     #[error("Work item not found: {work_id}")]
     WorkNotFound { work_id: String },
 
+    /// Queue operation error
+    #[error("Queue error: {message}")]
+    QueueError { message: String },
+
     /// Generic error for other issues
     #[error("{0}")]
     Other(String),

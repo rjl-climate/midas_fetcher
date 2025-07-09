@@ -540,6 +540,8 @@ impl WorkQueueConfigToml {
             retry_delay: Duration::from_millis(self.retry_delay_ms),
             max_workers: self.max_workers,
             work_timeout: Duration::from_secs(self.work_timeout_secs),
+            max_pending_items: 50_000,
+            default_priority: 100,
         }
     }
 }
