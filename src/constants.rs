@@ -260,6 +260,38 @@ pub mod logging {
     pub const LOG_FORMAT: &str = "json";
 }
 
+/// Coordinator and orchestration constants
+pub mod coordinator {
+    use super::Duration;
+
+    /// Interval for cleanup tasks (cache reservations, timeouts)
+    pub const CLEANUP_INTERVAL: Duration = Duration::from_secs(120);
+
+    /// Interval for periodic progress logging
+    pub const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(60);
+
+    /// Interval for timeout monitoring checks
+    pub const TIMEOUT_CHECK_INTERVAL: Duration = Duration::from_secs(300);
+
+    /// Timeout for background task shutdown
+    pub const TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Timeout for progress (no progress for this long triggers exit)
+    pub const PROGRESS_TIMEOUT: Duration = Duration::from_secs(30 * 60); // 30 minutes
+
+    /// Rolling window size for download rate calculation
+    pub const RATE_CALCULATION_WINDOW: usize = 10;
+
+    /// Minimum progress rate threshold (files/sec)
+    pub const MIN_PROGRESS_RATE_THRESHOLD: f64 = 5.0;
+
+    /// Completion check iteration log frequency
+    pub const COMPLETION_LOG_FREQUENCY: u32 = 100; // Every 10 seconds at 100ms intervals
+
+    /// Cleanup frequency during completion detection
+    pub const COMPLETION_CLEANUP_FREQUENCY: u32 = 50; // Every 5 seconds
+}
+
 // Re-export commonly used constants for convenience
 pub use auth::{CEDA_AUTH_BASE_URL, CEDA_LOGIN_URL};
 pub use ceda::{BASE_URL as CEDA_BASE_URL, TEST_FILE_URL};
