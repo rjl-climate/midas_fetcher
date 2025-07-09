@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use chrono;
 use futures::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
@@ -79,6 +80,343 @@ impl Default for ManifestConfig {
     }
 }
 
+/// Information about a manifest version
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestVersion {
+    /// Version identifier (e.g., 202407)
+    pub version: u32,
+    /// Filename of the manifest
+    pub filename: String,
+    /// Local path to the manifest file
+    pub local_path: Option<PathBuf>,
+    /// Remote URL for downloading
+    pub remote_url: String,
+    /// When this manifest was last updated
+    pub last_updated: Option<chrono::DateTime<chrono::Utc>>,
+    /// Dataset versions referenced in this manifest
+    pub dataset_versions: Vec<String>,
+    /// Whether this manifest is compatible with current data
+    pub is_compatible: Option<bool>,
+}
+
+impl ManifestVersion {
+    /// Create a new manifest version
+    pub fn new(version: u32, filename: String, remote_url: String) -> Self {
+        Self {
+            version,
+            filename,
+            local_path: None,
+            remote_url,
+            last_updated: None,
+            dataset_versions: Vec::new(),
+            is_compatible: None,
+        }
+    }
+
+    /// Check if this manifest version is newer than another
+    pub fn is_newer_than(&self, other: &ManifestVersion) -> bool {
+        self.version > other.version
+    }
+
+    /// Get the version as a formatted string (e.g., "202407")
+    pub fn version_string(&self) -> String {
+        self.version.to_string()
+    }
+}
+
+/// Manager for multiple manifest versions
+#[derive(Debug, Clone)]
+pub struct ManifestVersionManager {
+    /// Cache directory for manifest files
+    cache_dir: PathBuf,
+    /// Available manifest versions
+    available_versions: Vec<ManifestVersion>,
+    /// Current selected version
+    selected_version: Option<ManifestVersion>,
+}
+
+impl ManifestVersionManager {
+    /// Create a new manifest version manager
+    pub fn new(cache_dir: PathBuf) -> Self {
+        Self {
+            cache_dir,
+            available_versions: Vec::new(),
+            selected_version: None,
+        }
+    }
+
+    /// Discover available manifest versions from remote
+    pub async fn discover_available_versions(
+        &mut self,
+        client: &crate::app::CedaClient,
+    ) -> ManifestResult<()> {
+        use crate::constants::selectors;
+        use scraper::{Html, Selector};
+
+        let directory_url = "https://data.ceda.ac.uk/badc/ukmo-midas-open/";
+
+        // Download the directory page HTML
+        let html_content = client
+            .download_file_content(directory_url)
+            .await
+            .map_err(|e| {
+                ManifestError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
+
+        let html_text = String::from_utf8(html_content).map_err(|e| {
+            ManifestError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        // Parse HTML
+        let document = Html::parse_document(&html_text);
+        let selector = Selector::parse(selectors::MANIFEST_MD5_SELECTOR).map_err(|e| {
+            ManifestError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        // Find all manifest links and extract versions
+        let mut versions = Vec::new();
+
+        for element in document.select(&selector) {
+            if let Some(href) = element.value().attr("href") {
+                let filename = href.split('/').last().unwrap_or(href);
+                if let Some(version) = parse_manifest_version(filename) {
+                    let full_url = if href.starts_with("http") {
+                        href.to_string()
+                    } else {
+                        format!("{}{}", directory_url.trim_end_matches('/'), href)
+                    };
+                    versions.push(ManifestVersion::new(
+                        version,
+                        filename.to_string(),
+                        full_url,
+                    ));
+                }
+            }
+        }
+
+        // Sort by version number
+        versions.sort_by_key(|v| v.version);
+        self.available_versions = versions;
+
+        Ok(())
+    }
+
+    /// Discover locally cached manifest versions
+    pub async fn discover_local_versions(&mut self) -> ManifestResult<()> {
+        let mut versions = Vec::new();
+
+        // Look for versioned manifest files in cache directory
+        if let Ok(entries) = std::fs::read_dir(&self.cache_dir) {
+            for entry in entries.flatten() {
+                if let Some(filename) = entry.file_name().to_str() {
+                    if filename.starts_with("midas-open-v") && filename.ends_with("-md5s.txt") {
+                        if let Some(version) = parse_manifest_version(filename) {
+                            let mut manifest_version = ManifestVersion::new(
+                                version,
+                                filename.to_string(),
+                                format!(
+                                    "https://data.ceda.ac.uk/badc/ukmo-midas-open/{}",
+                                    filename
+                                ),
+                            );
+                            manifest_version.local_path = Some(entry.path());
+
+                            // Set file modification time
+                            if let Ok(metadata) = entry.metadata() {
+                                if let Ok(modified) = metadata.modified() {
+                                    if let Ok(datetime) =
+                                        modified.duration_since(std::time::UNIX_EPOCH)
+                                    {
+                                        manifest_version.last_updated = Some(
+                                            chrono::DateTime::from_timestamp(
+                                                datetime.as_secs() as i64,
+                                                0,
+                                            )
+                                            .unwrap_or_else(chrono::Utc::now),
+                                        );
+                                    }
+                                }
+                            }
+
+                            versions.push(manifest_version);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by version number
+        versions.sort_by_key(|v| v.version);
+        self.available_versions = versions;
+
+        Ok(())
+    }
+
+    /// Get all available versions
+    pub fn get_available_versions(&self) -> &[ManifestVersion] {
+        &self.available_versions
+    }
+
+    /// Get the latest compatible version from cached versions
+    pub fn get_latest_compatible_version(&self) -> Option<&ManifestVersion> {
+        self.available_versions
+            .iter()
+            .rev()
+            .find(|v| v.is_compatible == Some(true))
+    }
+
+    /// Select a specific version
+    pub fn select_version(&mut self, version: u32) -> Result<(), ManifestError> {
+        if let Some(manifest) = self
+            .available_versions
+            .iter()
+            .find(|v| v.version == version)
+        {
+            self.selected_version = Some(manifest.clone());
+            Ok(())
+        } else {
+            Err(ManifestError::NotFound {
+                path: PathBuf::from(format!("manifest version {}", version)),
+            })
+        }
+    }
+
+    /// Get the selected version
+    pub fn get_selected_version(&self) -> Option<&ManifestVersion> {
+        self.selected_version.as_ref()
+    }
+
+    /// Auto-select the latest compatible version
+    pub async fn auto_select_compatible_version(
+        &mut self,
+        client: &crate::app::CedaClient,
+    ) -> ManifestResult<Option<ManifestVersion>> {
+        // Check compatibility for all versions, starting from the latest
+        let mut compatible_versions = Vec::new();
+
+        for version in self.available_versions.iter().rev() {
+            if let Ok(is_compatible) = self.check_version_compatibility(version, client).await {
+                if is_compatible {
+                    compatible_versions.push(version.clone());
+                }
+            }
+        }
+
+        if let Some(latest_compatible) = compatible_versions.first() {
+            self.selected_version = Some(latest_compatible.clone());
+            Ok(Some(latest_compatible.clone()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Check if a manifest version is compatible with current data
+    pub async fn check_version_compatibility(
+        &self,
+        version: &ManifestVersion,
+        client: &crate::app::CedaClient,
+    ) -> ManifestResult<bool> {
+        // Extract dataset version from manifest version
+        let dataset_version = format!("dataset-version-{}", version.version);
+
+        // Check if this dataset version exists on the server
+        // We'll check the uk-daily-rain-obs dataset as a representative sample
+        let test_url = format!(
+            "https://data.ceda.ac.uk/badc/ukmo-midas-open/data/uk-daily-rain-obs/{}/",
+            dataset_version
+        );
+
+        match client.download_file_content(&test_url).await {
+            Ok(_) => Ok(true),
+            Err(crate::errors::DownloadError::NotFound { .. }) => Ok(false),
+            Err(crate::errors::DownloadError::Forbidden { .. }) => Ok(false),
+            Err(_) => Ok(false), // Assume incompatible on other errors
+        }
+    }
+
+    /// Get the local path for a manifest version
+    pub fn get_local_path(&self, version: &ManifestVersion) -> PathBuf {
+        self.cache_dir.join(&version.filename)
+    }
+
+    /// Check if a manifest version is downloaded locally
+    pub fn is_downloaded(&self, version: &ManifestVersion) -> bool {
+        self.get_local_path(version).exists()
+    }
+
+    /// Download a specific manifest version
+    pub async fn download_version(
+        &mut self,
+        version: &ManifestVersion,
+        client: &crate::app::CedaClient,
+    ) -> ManifestResult<()> {
+        use std::fs::File;
+        use std::io::Write;
+
+        let content = client
+            .download_file_content(&version.remote_url)
+            .await
+            .map_err(|e| {
+                ManifestError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
+
+        let local_path = self.get_local_path(version);
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent).map_err(ManifestError::Io)?;
+        }
+
+        let mut file = File::create(&local_path).map_err(ManifestError::Io)?;
+        file.write_all(&content).map_err(ManifestError::Io)?;
+
+        // Update the version info
+        if let Some(mut_version) = self
+            .available_versions
+            .iter_mut()
+            .find(|v| v.version == version.version)
+        {
+            mut_version.local_path = Some(local_path.clone());
+            mut_version.last_updated = Some(chrono::Utc::now());
+        }
+
+        info!(
+            "Downloaded manifest version {} to: {}",
+            version.version,
+            local_path.display()
+        );
+        Ok(())
+    }
+}
+
+/// Parse version number from manifest filename
+fn parse_manifest_version(filename: &str) -> Option<u32> {
+    // Look for pattern "midas-open-v" followed by digits followed by "-md5s.txt"
+    if let Some(start) = filename.find("midas-open-v") {
+        let version_start = start + "midas-open-v".len();
+        if let Some(end) = filename[version_start..].find("-md5s.txt") {
+            let version_str = &filename[version_start..version_start + end];
+            version_str.parse::<u32>().ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 /// Streaming manifest parser with duplicate detection
 pub struct ManifestStreamer {
     /// Configuration for parsing
@@ -89,9 +427,36 @@ pub struct ManifestStreamer {
     stats: ManifestStats,
     /// Current line number for error reporting
     current_line: usize,
+    /// Manifest version for folder naming
+    manifest_version: Option<u32>,
 }
 
 impl ManifestStreamer {
+    /// Extract manifest version from a path (e.g., "/path/to/midas-open-v202407-md5s.txt" -> Some(202407))
+    pub fn extract_manifest_version_from_path(manifest_path: &Path) -> Option<u32> {
+        if let Some(filename) = manifest_path.file_name() {
+            if let Some(filename_str) = filename.to_str() {
+                return Self::extract_version_from_filename(filename_str);
+            }
+        }
+        None
+    }
+
+    /// Extract manifest version from filename (e.g., "midas-open-v202407-md5s.txt" -> Some(202407))
+    fn extract_version_from_filename(filename: &str) -> Option<u32> {
+        if let Some(start) = filename.find("-v") {
+            let version_part = &filename[start + 2..];
+            if let Some(end) = version_part.find("-") {
+                let version_str = &version_part[..end];
+                version_str.parse().ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
     /// Create a new manifest streamer with default configuration
     pub fn new() -> Self {
         Self::with_config(ManifestConfig::default())
@@ -104,6 +469,29 @@ impl ManifestStreamer {
             seen_hashes: HashSet::new(),
             stats: ManifestStats::default(),
             current_line: 0,
+            manifest_version: None,
+        }
+    }
+
+    /// Create a new manifest streamer with manifest version
+    pub fn with_version(manifest_version: Option<u32>) -> Self {
+        Self {
+            config: ManifestConfig::default(),
+            seen_hashes: HashSet::new(),
+            stats: ManifestStats::default(),
+            current_line: 0,
+            manifest_version,
+        }
+    }
+
+    /// Create a new manifest streamer with custom configuration and manifest version
+    pub fn with_config_and_version(config: ManifestConfig, manifest_version: Option<u32>) -> Self {
+        Self {
+            config,
+            seen_hashes: HashSet::new(),
+            stats: ManifestStats::default(),
+            current_line: 0,
+            manifest_version,
         }
     }
 
@@ -153,9 +541,19 @@ impl ManifestStreamer {
         let reader = BufReader::new(file);
         let lines = reader.lines();
 
+        // Extract manifest version from filename if not already set
+        if self.manifest_version.is_none() {
+            if let Some(filename) = manifest_path.as_ref().file_name() {
+                if let Some(filename_str) = filename.to_str() {
+                    self.manifest_version = Self::extract_version_from_filename(filename_str);
+                }
+            }
+        }
+
         info!(
-            "Starting manifest streaming from: {}",
-            manifest_path.as_ref().display()
+            "Starting manifest streaming from: {} (version: {:?})",
+            manifest_path.as_ref().display(),
+            self.manifest_version
         );
 
         Ok(FileInfoStream {
@@ -216,7 +614,12 @@ impl ManifestStreamer {
         }
 
         // Create FileInfo
-        match FileInfo::new(hash, path, &self.config.destination_root) {
+        match FileInfo::new(
+            hash,
+            path,
+            &self.config.destination_root,
+            self.manifest_version,
+        ) {
             Ok(file_info) => {
                 self.stats.valid_entries += 1;
 
@@ -350,7 +753,9 @@ pub async fn collect_all_files<P: AsRef<Path>>(
     manifest_path: P,
     config: ManifestConfig,
 ) -> ManifestResult<Vec<FileInfo>> {
-    let mut streamer = ManifestStreamer::with_config(config);
+    let manifest_version =
+        ManifestStreamer::extract_manifest_version_from_path(manifest_path.as_ref());
+    let mut streamer = ManifestStreamer::with_config_and_version(config, manifest_version);
     let mut stream = streamer.stream(manifest_path).await?;
     let mut files = Vec::new();
 
@@ -419,6 +824,35 @@ mod tests {
         file.write_all(content.as_bytes()).unwrap();
         file.flush().unwrap();
         file
+    }
+
+    /// Test manifest version extraction from filename
+    #[test]
+    fn test_manifest_version_extraction() {
+        assert_eq!(
+            ManifestStreamer::extract_version_from_filename("midas-open-v202407-md5s.txt"),
+            Some(202407)
+        );
+        assert_eq!(
+            ManifestStreamer::extract_version_from_filename("midas-open-v202501-md5s.txt"),
+            Some(202501)
+        );
+        assert_eq!(
+            ManifestStreamer::extract_version_from_filename("midas-open-v202312-md5s.txt"),
+            Some(202312)
+        );
+        assert_eq!(
+            ManifestStreamer::extract_version_from_filename("invalid-filename.txt"),
+            None
+        );
+        assert_eq!(
+            ManifestStreamer::extract_version_from_filename("midas-open-v-md5s.txt"),
+            None
+        );
+        assert_eq!(
+            ManifestStreamer::extract_version_from_filename("midas-open-vABC-md5s.txt"),
+            None
+        );
     }
 
     /// Test basic manifest streaming functionality with valid entries.
@@ -888,6 +1322,74 @@ ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-rain-obs/dataset-version-20250
         );
         println!("   Rain dataset versions: {:?}", rain_dataset.versions);
     }
+
+    /// Test that manifest version is correctly extracted and used for folder renaming.
+    /// Verifies that dataset folders are renamed with the manifest version suffix.
+    #[tokio::test]
+    async fn test_manifest_version_folder_renaming() {
+        let content = r#"50c9d1c465f3cbff652be1509c2e2a4e  ./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test.csv
+9734faa872681f96b144f60d29d52011  ./data/uk-daily-rain-obs/dataset-version-202407/devon/01382_another/test2.csv"#;
+
+        // Create a manifest file with version in filename
+        let mut manifest_file = NamedTempFile::new().unwrap();
+        manifest_file.write_all(content.as_bytes()).unwrap();
+        manifest_file.flush().unwrap();
+
+        // Rename the file to have the version format
+        let versioned_manifest_path = manifest_file
+            .path()
+            .with_file_name("midas-open-v202407-md5s.txt");
+        std::fs::copy(manifest_file.path(), &versioned_manifest_path).unwrap();
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = ManifestConfig {
+            destination_root: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let mut streamer = ManifestStreamer::with_config(config);
+
+        let files = {
+            let mut stream = streamer.stream(&versioned_manifest_path).await.unwrap();
+            let mut files = Vec::new();
+            while let Some(result) = stream.next().await {
+                files.push(result.unwrap());
+            }
+            files
+        };
+
+        // Clean up the temporary versioned manifest file
+        std::fs::remove_file(&versioned_manifest_path).ok();
+
+        // Verify that the dataset folders have been renamed with the manifest version
+        assert_eq!(files.len(), 2);
+
+        // Check that the destination paths include the manifest version
+
+        // File 1: uk-daily-temperature-obs should become uk-daily-temperature-obs-202407
+        assert!(files[0]
+            .destination_path
+            .to_str()
+            .unwrap()
+            .contains("uk-daily-temperature-obs-202407"));
+        assert!(!files[0]
+            .destination_path
+            .to_str()
+            .unwrap()
+            .contains("uk-daily-temperature-obs/dataset-version-202407"));
+
+        // File 2: uk-daily-rain-obs should become uk-daily-rain-obs-202407
+        assert!(files[1]
+            .destination_path
+            .to_str()
+            .unwrap()
+            .contains("uk-daily-rain-obs-202407"));
+        assert!(!files[1]
+            .destination_path
+            .to_str()
+            .unwrap()
+            .contains("uk-daily-rain-obs/dataset-version-202407"));
+    }
 }
 
 /// Information about available datasets and versions from manifest analysis
@@ -992,7 +1494,9 @@ pub async fn collect_datasets_and_years<P: AsRef<Path>>(
     use std::collections::HashMap;
 
     let config = ManifestConfig::default();
-    let mut streamer = ManifestStreamer::with_config(config);
+    let manifest_version =
+        ManifestStreamer::extract_manifest_version_from_path(manifest_path.as_ref());
+    let mut streamer = ManifestStreamer::with_config_and_version(config, manifest_version);
     let mut stream = streamer.stream(manifest_path).await?;
 
     let mut datasets: HashMap<String, DatasetSummary> = HashMap::new();
@@ -1087,7 +1591,9 @@ pub async fn filter_manifest_files<P: AsRef<Path>>(
     use futures::StreamExt;
 
     let config = ManifestConfig::default();
-    let mut streamer = ManifestStreamer::with_config(config);
+    let manifest_version =
+        ManifestStreamer::extract_manifest_version_from_path(manifest_path.as_ref());
+    let mut streamer = ManifestStreamer::with_config_and_version(config, manifest_version);
     let mut stream = streamer.stream(manifest_path).await?;
 
     let mut filtered_files = Vec::new();
@@ -1191,7 +1697,9 @@ pub async fn fill_queue_from_manifest<P: AsRef<Path>>(
     use futures::StreamExt;
 
     let config = ManifestConfig::default();
-    let mut streamer = ManifestStreamer::with_config(config);
+    let manifest_version =
+        ManifestStreamer::extract_manifest_version_from_path(manifest_path.as_ref());
+    let mut streamer = ManifestStreamer::with_config_and_version(config, manifest_version);
     let mut stream = streamer.stream(manifest_path).await?;
 
     let mut added_count = 0;

@@ -78,6 +78,14 @@ pub enum DownloadError {
     #[error("Server error: HTTP {status}")]
     ServerError { status: u16 },
 
+    /// File not found on server (HTTP 404)
+    #[error("File not found on server: {url}")]
+    NotFound { url: String },
+
+    /// Access denied (HTTP 403)
+    #[error("Access denied: {url}")]
+    Forbidden { url: String },
+
     /// Rate limit exceeded
     #[error("Rate limit exceeded. Server responded with HTTP 429")]
     RateLimitExceeded,
@@ -398,6 +406,8 @@ impl AppError {
             AppError::Auth(AuthError::LoginFailed)
             | AppError::Download(DownloadError::FileExists { .. })
             | AppError::Download(DownloadError::MaxRetriesExceeded { .. })
+            | AppError::Download(DownloadError::NotFound { .. })
+            | AppError::Download(DownloadError::Forbidden { .. })
             | AppError::Manifest(ManifestError::InvalidFormat { .. })
             | AppError::Config(ConfigError::InvalidFormat(_)) => false,
 

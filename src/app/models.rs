@@ -343,6 +343,8 @@ pub struct FileInfo {
     pub file_name: String,
     /// Parsed dataset metadata
     pub dataset_info: DatasetFileInfo,
+    /// Manifest version (e.g., 202507) used to create versioned folder names
+    pub manifest_version: Option<u32>,
     /// Number of retry attempts for this file
     pub retry_count: u32,
     /// Timestamp of last download attempt (skipped during serialization)
@@ -362,6 +364,7 @@ impl FileInfo {
     /// * `hash` - MD5 hash (efficient byte array representation)
     /// * `relative_path` - Path from manifest
     /// * `destination_root` - Base directory for file storage
+    /// * `manifest_version` - Optional manifest version to append to dataset folder name
     ///
     /// # Errors
     ///
@@ -370,6 +373,7 @@ impl FileInfo {
         hash: Md5Hash,
         relative_path: String,
         destination_root: &Path,
+        manifest_version: Option<u32>,
     ) -> ManifestResult<Self> {
         // Parse dataset info from path
         let dataset_info = DatasetFileInfo::from_path(&relative_path)?;
@@ -381,15 +385,32 @@ impl FileInfo {
             .unwrap_or("unknown")
             .to_string();
 
-        // Build destination path (preserve directory structure)
+        // Build destination path with manifest version in dataset folder name
         let normalized_path = relative_path.strip_prefix("./").unwrap_or(&relative_path);
-        let destination_path = destination_root.join(normalized_path);
+        let mut destination_path = destination_root.to_path_buf();
+
+        // Split path into components and modify the dataset folder name
+        let path_components: Vec<&str> = normalized_path.split('/').collect();
+        for (i, component) in path_components.iter().enumerate() {
+            if i == 1 && !dataset_info.dataset_name.is_empty() {
+                // This is the dataset folder - append manifest version if provided
+                if let Some(version) = manifest_version {
+                    let versioned_name = format!("{}-{}", dataset_info.dataset_name, version);
+                    destination_path.push(versioned_name);
+                } else {
+                    destination_path.push(component);
+                }
+            } else {
+                destination_path.push(component);
+            }
+        }
 
         Ok(FileInfo {
             hash,
             relative_path,
             file_name,
             dataset_info,
+            manifest_version,
             retry_count: 0,
             last_attempt: None,
             estimated_size: None,
@@ -620,7 +641,7 @@ mod tests {
         let path = "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/qc-version-1/test_file.csv".to_string();
 
         let hash_obj = Md5Hash::from_hex(&hash).unwrap();
-        let file_info = FileInfo::new(hash_obj, path.clone(), destination_root).unwrap();
+        let file_info = FileInfo::new(hash_obj, path.clone(), destination_root, None).unwrap();
 
         assert_eq!(file_info.hash.to_hex(), hash);
         assert_eq!(file_info.relative_path, path);
@@ -659,6 +680,7 @@ mod tests {
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test.csv"
                 .to_string(),
             destination_root,
+            None,
         )
         .unwrap();
 
@@ -698,6 +720,7 @@ mod tests {
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test.csv"
                 .to_string(),
             destination_root,
+            None,
         )
         .unwrap();
 
@@ -726,6 +749,7 @@ mod tests {
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test1.csv"
                 .to_string(),
             destination_root,
+            None,
         )
         .unwrap();
 
@@ -735,6 +759,7 @@ mod tests {
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test2.csv"
                 .to_string(),
             destination_root,
+            None,
         )
         .unwrap();
 
@@ -744,6 +769,7 @@ mod tests {
             "./data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/test3.csv"
                 .to_string(),
             destination_root,
+            None,
         )
         .unwrap();
 

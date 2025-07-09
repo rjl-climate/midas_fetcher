@@ -442,21 +442,33 @@ impl DownloadWorker {
                 }
                 Err(e) => {
                     debug!("Worker {} download failed: {}", self.id, e);
-                    retry_count += 1;
 
-                    if retry_count >= self.config.max_retries {
-                        // Release the reservation on permanent failure
-                        let _ = self.cache.release_reservation(&file_info.hash).await;
-                        return Err(DownloadError::MaxRetriesExceeded {
-                            max_retries: retry_count,
-                        });
+                    // Check if this is a permanent error (404, 403, etc.) that shouldn't be retried
+                    match &e {
+                        DownloadError::NotFound { .. } | DownloadError::Forbidden { .. } => {
+                            // Release the reservation on permanent failure
+                            let _ = self.cache.release_reservation(&file_info.hash).await;
+                            return Err(e);
+                        }
+                        _ => {
+                            // For retryable errors, continue with retry logic
+                            retry_count += 1;
+
+                            if retry_count >= self.config.max_retries {
+                                // Release the reservation on permanent failure
+                                let _ = self.cache.release_reservation(&file_info.hash).await;
+                                return Err(DownloadError::MaxRetriesExceeded {
+                                    max_retries: retry_count,
+                                });
+                            }
+
+                            self.report_progress(
+                                WorkerStatus::Error { retry_count },
+                                Some(format!("Download failed, retrying: {}", e)),
+                            )
+                            .await;
+                        }
                     }
-
-                    self.report_progress(
-                        WorkerStatus::Error { retry_count },
-                        Some(format!("Download failed, retrying: {}", e)),
-                    )
-                    .await;
                 }
             }
 
@@ -933,7 +945,9 @@ mod tests {
             ..Default::default()
         };
 
-        let mut streamer = ManifestStreamer::with_config(manifest_config);
+        let manifest_version = ManifestStreamer::extract_manifest_version_from_path(manifest_path);
+        let mut streamer =
+            ManifestStreamer::with_config_and_version(manifest_config, manifest_version);
         let mut stream = streamer.stream(manifest_path).await.unwrap();
 
         // Add first 3 files to queue for testing

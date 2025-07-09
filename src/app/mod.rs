@@ -63,8 +63,8 @@ pub mod worker;
 
 // Re-export main public API
 pub use cache::{
-    CacheConfig, CacheManager, CacheStats, ReservationInfo, ReservationState, ReservationStatus,
-    VerificationFailure, VerificationReport,
+    CacheConfig, CacheManager, CacheStats, PathGenerator, ReservationInfo, ReservationState,
+    ReservationStatus, VerificationFailure, VerificationReport,
 };
 pub use client::{CedaClient, ClientConfig};
 pub use coordinator::{Coordinator, CoordinatorConfig, DownloadStats, SessionResult};

@@ -903,7 +903,7 @@ mod tests {
         };
 
         let hash_obj = Md5Hash::from_hex(&valid_hash).unwrap();
-        FileInfo::new(hash_obj, valid_path, temp_dir.path()).unwrap()
+        FileInfo::new(hash_obj, valid_path, temp_dir.path(), None).unwrap()
     }
 
     /// Test basic queue operations: add, get, complete

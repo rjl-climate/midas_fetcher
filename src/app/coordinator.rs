@@ -960,6 +960,7 @@ mod tests {
                 year: None,
                 file_type: None,
             },
+            manifest_version: Some(202507),
             retry_count: 0,
             last_attempt: None,
             estimated_size: Some(1024),

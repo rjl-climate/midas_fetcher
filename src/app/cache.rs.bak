@@ -42,6 +42,7 @@
 //!     relative_path: "./data/test.csv".to_string(),
 //!     file_name: "test.csv".to_string(),
 //!     dataset_info,
+//!     manifest_version: Some(202507),
 //!     retry_count: 0,
 //!     last_attempt: None,
 //!     estimated_size: None,
@@ -322,8 +323,13 @@ impl CacheManager {
         let dataset = &file_info.dataset_info;
         let mut path = self.cache_root.clone();
 
-        // Add dataset name
-        path.push(&dataset.dataset_name);
+        // Add dataset name (with manifest version if available)
+        if let Some(version) = file_info.manifest_version {
+            let versioned_name = format!("{}-{}", dataset.dataset_name, version);
+            path.push(versioned_name);
+        } else {
+            path.push(&dataset.dataset_name);
+        }
 
         // Determine path structure based on file type
         if let Some(ref file_type) = dataset.file_type {
@@ -802,6 +808,7 @@ mod tests {
             relative_path: "./data/test.csv".to_string(),
             file_name: "test.csv".to_string(),
             dataset_info,
+            manifest_version: Some(202507),
             retry_count: 0,
             last_attempt: None,
             estimated_size: None,
@@ -823,7 +830,7 @@ mod tests {
 
         let expected_path = temp_dir
             .path()
-            .join("uk-daily-temperature-obs")
+            .join("uk-daily-temperature-obs-202507")
             .join("qcv-1")
             .join("devon")
             .join("01381_twist")
@@ -860,6 +867,7 @@ mod tests {
             relative_path: "./data/capability.csv".to_string(),
             file_name: "capability.csv".to_string(),
             dataset_info,
+            manifest_version: Some(202507),
             retry_count: 0,
             last_attempt: None,
             estimated_size: None,
@@ -871,7 +879,7 @@ mod tests {
         // Capability files should go in separate capability folder
         let expected_path = temp_dir
             .path()
-            .join("uk-daily-temperature-obs")
+            .join("uk-daily-temperature-obs-202507")
             .join("capability")
             .join("devon")
             .join("01381_twist")
@@ -908,6 +916,7 @@ mod tests {
             relative_path: "./data/metadata.csv".to_string(),
             file_name: "metadata.csv".to_string(),
             dataset_info,
+            manifest_version: Some(202507),
             retry_count: 0,
             last_attempt: None,
             estimated_size: None,
@@ -919,7 +928,7 @@ mod tests {
         // Metadata files should also go in capability folder
         let expected_path = temp_dir
             .path()
-            .join("uk-daily-temperature-obs")
+            .join("uk-daily-temperature-obs-202507")
             .join("capability")
             .join("devon")
             .join("01382_exeter")
@@ -1109,7 +1118,10 @@ mod tests {
             destination_root: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
-        let mut streamer = ManifestStreamer::with_config(manifest_config);
+        let manifest_version =
+            ManifestStreamer::extract_manifest_version_from_path(manifest_file.path());
+        let mut streamer =
+            ManifestStreamer::with_config_and_version(manifest_config, manifest_version);
         let mut stream = streamer.stream(manifest_file.path()).await.unwrap();
 
         let mut processed_files = Vec::new();
@@ -1255,6 +1267,7 @@ mod tests {
             file_name: "midas-open_uk-daily-temperature-obs_dv-202507_station-metadata.csv"
                 .to_string(),
             dataset_info,
+            manifest_version: Some(202507),
             retry_count: 0,
             last_attempt: None,
             estimated_size: None,
@@ -1266,7 +1279,7 @@ mod tests {
         // Station metadata files should go in station-metadata folder
         let expected_path = temp_dir
             .path()
-            .join("uk-daily-temperature-obs")
+            .join("uk-daily-temperature-obs-202507")
             .join("station-metadata")
             .join("midas-open_uk-daily-temperature-obs_dv-202507_station-metadata.csv");
 
@@ -1301,6 +1314,7 @@ mod tests {
             relative_path: "./data/change-log.txt".to_string(),
             file_name: "midas-open_uk-daily-temperature-obs_dv-202507_change_log.txt".to_string(),
             dataset_info,
+            manifest_version: Some(202507),
             retry_count: 0,
             last_attempt: None,
             estimated_size: None,
@@ -1312,7 +1326,7 @@ mod tests {
         // Change log files should go directly in dataset root
         let expected_path = temp_dir
             .path()
-            .join("uk-daily-temperature-obs")
+            .join("uk-daily-temperature-obs-202507")
             .join("midas-open_uk-daily-temperature-obs_dv-202507_change_log.txt");
 
         assert_eq!(path, expected_path);
@@ -1346,6 +1360,7 @@ mod tests {
             relative_path: "./data/station-log.txt".to_string(),
             file_name: "some-station-log.txt".to_string(),
             dataset_info,
+            manifest_version: Some(202507),
             retry_count: 0,
             last_attempt: None,
             estimated_size: None,
@@ -1357,7 +1372,7 @@ mod tests {
         // Station log files should go in station-log-files folder
         let expected_path = temp_dir
             .path()
-            .join("uk-daily-temperature-obs")
+            .join("uk-daily-temperature-obs-202507")
             .join("station-log-files")
             .join("some-station-log.txt");
 

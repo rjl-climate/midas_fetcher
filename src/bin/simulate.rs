@@ -281,7 +281,7 @@ async fn generate_synthetic_files(temp_dir: &TempDir, config: &SimulationConfig)
             county, station, qc_version, county, station, qc_version, year
         );
 
-        if let Ok(file_info) = FileInfo::new(hash, path, temp_dir.path()) {
+        if let Ok(file_info) = FileInfo::new(hash, path, temp_dir.path(), Some(202407)) {
             files.push(file_info);
             seen_hashes.insert(hash.to_hex());
         }

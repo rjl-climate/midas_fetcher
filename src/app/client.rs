@@ -574,9 +574,19 @@ impl CedaClient {
         let response = self.get_response(&parsed_url).await?;
 
         if !response.status().is_success() {
-            return Err(DownloadError::ServerError {
-                status: response.status().as_u16(),
-            });
+            match response.status().as_u16() {
+                404 => {
+                    return Err(DownloadError::NotFound {
+                        url: url.to_string(),
+                    })
+                }
+                403 => {
+                    return Err(DownloadError::Forbidden {
+                        url: url.to_string(),
+                    })
+                }
+                status => return Err(DownloadError::ServerError { status }),
+            }
         }
 
         let bytes = response.bytes().await.map_err(DownloadError::Http)?;
@@ -751,7 +761,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut streamer = ManifestStreamer::with_config(config);
+        let manifest_version = ManifestStreamer::extract_manifest_version_from_path(manifest_path);
+        let mut streamer = ManifestStreamer::with_config_and_version(config, manifest_version);
         let mut stream = streamer
             .stream(manifest_path)
             .await

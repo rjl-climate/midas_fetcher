@@ -65,28 +65,29 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
         auth_check_start.elapsed()
     );
 
-    // Determine manifest file to use
-    let manifest_start = Instant::now();
-    let manifest_path = find_manifest_file().await?;
-    info!(
-        "Using manifest file: {} (found in {:?})",
-        manifest_path.display(),
-        manifest_start.elapsed()
-    );
-
     // Get quality control version
     let quality_version = args.quality_version();
     info!("Using quality control version: {}", quality_version);
 
-    // Interactive dataset selection with file count
+    // Interactive dataset selection first (using any available manifest for list)
+    let temp_manifest_path = find_any_manifest_file().await?;
     let selection_start = Instant::now();
     let (selected_dataset, expected_files) = interactive_selection(
-        &manifest_path,
+        &temp_manifest_path,
         args.dataset.as_deref(),
         args.county.as_deref(),
         &quality_version,
     )
     .await?;
+
+    // Now get the correct manifest for the selected dataset
+    let manifest_start = Instant::now();
+    let manifest_path = find_manifest_file_for_dataset(&selected_dataset, &args).await?;
+    info!(
+        "Using manifest file: {} (found in {:?})",
+        manifest_path.display(),
+        manifest_start.elapsed()
+    );
     info!(
         "Dataset selection completed in {:?} - expecting {} files",
         selection_start.elapsed(),
@@ -1105,7 +1106,8 @@ async fn load_manifest_hashes(
 ) -> Result<HashMap<PathBuf, Md5Hash>> {
     use futures::StreamExt;
 
-    let mut manifest_streamer = ManifestStreamer::new();
+    let manifest_version = ManifestStreamer::extract_manifest_version_from_path(manifest_path);
+    let mut manifest_streamer = ManifestStreamer::with_version(manifest_version);
     let mut manifest_stream = manifest_streamer
         .stream(manifest_path)
         .await
@@ -1291,8 +1293,8 @@ async fn handle_cache_clean(all: bool, failed_only: bool) -> Result<()> {
     Ok(())
 }
 
-/// Find an available manifest file
-async fn find_manifest_file() -> Result<PathBuf> {
+/// Find any available manifest file (for dataset listing only)
+async fn find_any_manifest_file() -> Result<PathBuf> {
     use crate::app::CacheManager;
 
     // Get cache directory
@@ -1318,37 +1320,7 @@ async fn find_manifest_file() -> Result<PathBuf> {
         return Ok(cache_legacy_path);
     }
 
-    // Look for versioned manifest files in current directory first
-    if let Ok(entries) = std::fs::read_dir(".") {
-        let mut versioned_manifests: Vec<(u32, PathBuf)> = Vec::new();
-
-        for entry in entries.flatten() {
-            if let Some(filename) = entry.file_name().to_str() {
-                if filename.starts_with("midas-open-v") && filename.ends_with("-md5s.txt") {
-                    // Parse version from filename
-                    if let Some(start) = filename.find("midas-open-v") {
-                        let version_start = start + "midas-open-v".len();
-                        if let Some(end) = filename[version_start..].find("-md5s.txt") {
-                            let version_str = &filename[version_start..version_start + end];
-                            if let Ok(version) = version_str.parse::<u32>() {
-                                versioned_manifests.push((version, entry.path()));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if !versioned_manifests.is_empty() {
-            // Sort by version and return the latest
-            versioned_manifests.sort_by_key(|&(version, _)| version);
-            let (_, latest_path) = versioned_manifests.into_iter().last().unwrap();
-            debug!("Found latest manifest file: {}", latest_path.display());
-            return Ok(latest_path);
-        }
-    }
-
-    // Look for versioned manifest files in cache directory
+    // Look for any versioned manifest files in cache directory
     if let Ok(entries) = std::fs::read_dir(cache_root) {
         let mut versioned_manifests: Vec<(u32, PathBuf)> = Vec::new();
 
@@ -1370,14 +1342,408 @@ async fn find_manifest_file() -> Result<PathBuf> {
         }
 
         if !versioned_manifests.is_empty() {
-            // Sort by version and return the latest
+            // Sort by version and return any (we just need it for dataset listing)
             versioned_manifests.sort_by_key(|&(version, _)| version);
-            let (_, latest_path) = versioned_manifests.into_iter().last().unwrap();
+            let (_, any_path) = versioned_manifests.into_iter().last().unwrap();
             debug!(
-                "Found latest manifest file in cache: {}",
-                latest_path.display()
+                "Found manifest file for dataset listing: {}",
+                any_path.display()
             );
-            return Ok(latest_path);
+            return Ok(any_path);
+        }
+    }
+
+    Err(AppError::generic(
+        "No manifest file found. Run 'midas_fetcher manifest update' to download one.",
+    ))
+}
+
+/// Find manifest file specifically for a dataset
+async fn find_manifest_file_for_dataset(dataset: &str, args: &DownloadArgs) -> Result<PathBuf> {
+    use crate::app::CedaClient;
+
+    // If user specified a specific manifest version, use that
+    if let Some(requested_version) = args.manifest_version {
+        info!(
+            "Using user-specified manifest version: {}",
+            requested_version
+        );
+        return download_specific_manifest_version(requested_version).await;
+    }
+
+    // If user wants latest manifest, use that
+    if args.use_latest_manifest {
+        info!("Using latest available manifest version (user requested)");
+        return download_latest_manifest_version().await;
+    }
+
+    // Otherwise, find the correct manifest version for this dataset
+    info!("Finding correct manifest version for dataset: {}", dataset);
+
+    match CedaClient::new().await {
+        Ok(client) => {
+            let latest_dataset_version = get_latest_dataset_version(dataset, &client).await?;
+            info!(
+                "Latest dataset version for {}: {}",
+                dataset, latest_dataset_version
+            );
+
+            // Convert dataset version to manifest version (e.g., "202407" from "dataset-version-202407")
+            let manifest_version = if latest_dataset_version.starts_with("dataset-version-") {
+                latest_dataset_version
+                    .strip_prefix("dataset-version-")
+                    .unwrap()
+            } else {
+                &latest_dataset_version
+            };
+
+            let manifest_version_num: u32 = manifest_version.parse().map_err(|_| {
+                AppError::generic(format!(
+                    "Invalid dataset version format: {}",
+                    latest_dataset_version
+                ))
+            })?;
+
+            info!("Downloading manifest version: {}", manifest_version_num);
+            download_specific_manifest_version(manifest_version_num).await
+        }
+        Err(_) => {
+            warn!("No authentication available - falling back to any cached manifest");
+            find_any_manifest_file().await
+        }
+    }
+}
+
+/// Get the latest dataset version from the dataset's index page
+async fn get_latest_dataset_version(
+    dataset: &str,
+    client: &crate::app::CedaClient,
+) -> Result<String> {
+    use scraper::{Html, Selector};
+
+    let dataset_url = format!(
+        "https://data.ceda.ac.uk/badc/ukmo-midas-open/data/{}/",
+        dataset
+    );
+    info!("Checking dataset versions at: {}", dataset_url);
+
+    // Download the dataset directory page
+    let html_content = client
+        .download_file_content(&dataset_url)
+        .await
+        .map_err(AppError::Download)?;
+
+    let html_text = String::from_utf8(html_content)
+        .map_err(|e| AppError::generic(format!("Invalid UTF-8 in dataset page: {}", e)))?;
+
+    // Parse HTML and find dataset-version-* directories
+    let document = Html::parse_document(&html_text);
+    let selector = Selector::parse("a[href]")
+        .map_err(|e| AppError::generic(format!("Invalid CSS selector: {}", e)))?;
+
+    let mut dataset_versions: Vec<String> = Vec::new();
+
+    for element in document.select(&selector) {
+        if let Some(href) = element.value().attr("href") {
+            // Look for hrefs that contain "dataset-version-" anywhere in the path
+            if href.contains("dataset-version-") {
+                // Extract just the dataset-version part from the URL
+                if let Some(version_part) = href
+                    .split('/')
+                    .find(|part| part.starts_with("dataset-version-"))
+                {
+                    let version = version_part.to_string();
+                    debug!("Found dataset version: {}", version);
+                    dataset_versions.push(version);
+                }
+            }
+        }
+    }
+
+    if dataset_versions.is_empty() {
+        return Err(AppError::generic(format!(
+            "No dataset versions found for {}",
+            dataset
+        )));
+    }
+
+    // Sort versions and return the latest
+    dataset_versions.sort();
+    let latest = dataset_versions.into_iter().last().unwrap();
+
+    Ok(latest)
+}
+
+/// Download a specific manifest version
+async fn download_specific_manifest_version(version: u32) -> Result<PathBuf> {
+    use crate::app::{CacheManager, CedaClient};
+    use std::fs::File;
+    use std::io::Write;
+
+    let client = CedaClient::new().await.map_err(AppError::Auth)?;
+    let cache = CacheManager::new(Default::default())
+        .await
+        .map_err(AppError::Cache)?;
+    let cache_root = cache.cache_root();
+
+    let filename = format!("midas-open-v{}-md5s.txt", version);
+    let manifest_url = format!("https://dap.ceda.ac.uk/badc/ukmo-midas-open/{}", filename);
+    let local_path = cache_root.join(&filename);
+
+    // Check if already downloaded
+    if local_path.exists() {
+        info!("Using cached manifest version: {}", version);
+        return Ok(local_path);
+    }
+
+    info!(
+        "Downloading manifest version {} from: {}",
+        version, manifest_url
+    );
+
+    let content = client
+        .download_file_content(&manifest_url)
+        .await
+        .map_err(AppError::Download)?;
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = local_path.parent() {
+        std::fs::create_dir_all(parent).map_err(AppError::Io)?;
+    }
+
+    let mut file = File::create(&local_path).map_err(AppError::Io)?;
+    file.write_all(&content).map_err(AppError::Io)?;
+
+    info!(
+        "Downloaded manifest version {} to: {}",
+        version,
+        local_path.display()
+    );
+    Ok(local_path)
+}
+
+/// Download the latest available manifest version
+async fn download_latest_manifest_version() -> Result<PathBuf> {
+    use crate::app::manifest::ManifestVersionManager;
+    use crate::app::CacheManager;
+    use crate::app::CedaClient;
+
+    let client = CedaClient::new().await.map_err(AppError::Auth)?;
+    let cache = CacheManager::new(Default::default())
+        .await
+        .map_err(AppError::Cache)?;
+
+    let mut manifest_manager = ManifestVersionManager::new(cache.cache_root().to_path_buf());
+
+    // Discover available versions from remote
+    manifest_manager
+        .discover_available_versions(&client)
+        .await
+        .map_err(AppError::Manifest)?;
+
+    if let Some(latest_version) = manifest_manager.get_available_versions().last() {
+        download_specific_manifest_version(latest_version.version).await
+    } else {
+        Err(AppError::generic("No manifest versions available"))
+    }
+}
+
+/// Find an available manifest file (legacy function)
+async fn find_manifest_file() -> Result<PathBuf> {
+    use crate::app::manifest::ManifestVersionManager;
+    use crate::app::{CacheManager, CedaClient};
+
+    // Get cache directory
+    let cache = CacheManager::new(Default::default())
+        .await
+        .map_err(AppError::Cache)?;
+    let cache_root = cache.cache_root();
+
+    // First check for legacy manifest file in current directory
+    let legacy_path = Path::new("manifest.txt");
+    if legacy_path.exists() {
+        debug!("Found legacy manifest file: {}", legacy_path.display());
+        return Ok(legacy_path.to_path_buf());
+    }
+
+    // Check for legacy manifest file in cache directory
+    let cache_legacy_path = cache_root.join("manifest.txt");
+    if cache_legacy_path.exists() {
+        debug!(
+            "Found legacy manifest file in cache: {}",
+            cache_legacy_path.display()
+        );
+        return Ok(cache_legacy_path);
+    }
+
+    // Use the new manifest version management system
+    let mut manifest_manager = ManifestVersionManager::new(cache_root.to_path_buf());
+
+    // First, check if we have any locally cached manifest versions
+    manifest_manager
+        .discover_local_versions()
+        .await
+        .map_err(AppError::Manifest)?;
+
+    // If we have cached versions, try to find a compatible one
+    if !manifest_manager.get_available_versions().is_empty() {
+        debug!(
+            "Found {} cached manifest versions",
+            manifest_manager.get_available_versions().len()
+        );
+
+        // Try to find a compatible version using cached info
+        if let Some(compatible_version) = manifest_manager.get_latest_compatible_version() {
+            if let Some(local_path) = &compatible_version.local_path {
+                if local_path.exists() {
+                    info!(
+                        "Using compatible cached manifest version: {}",
+                        compatible_version.version
+                    );
+                    return Ok(local_path.clone());
+                }
+            }
+        }
+
+        // If no compatible version is cached, fall back to latest available
+        if let Some(latest_version) = manifest_manager.get_available_versions().last() {
+            if let Some(local_path) = &latest_version.local_path {
+                if local_path.exists() {
+                    warn!(
+                        "Using latest available manifest version {} (compatibility unknown)",
+                        latest_version.version
+                    );
+                    return Ok(local_path.clone());
+                }
+            }
+        }
+    }
+
+    // If we don't have cached versions or need to check compatibility online
+    // Try to create an authenticated client for compatibility checking
+    match CedaClient::new().await {
+        Ok(client) => {
+            // Discover available versions from remote
+            manifest_manager
+                .discover_available_versions(&client)
+                .await
+                .map_err(AppError::Manifest)?;
+
+            // Try to auto-select compatible version
+            match manifest_manager
+                .auto_select_compatible_version(&client)
+                .await
+            {
+                Ok(Some(selected_version)) => {
+                    info!(
+                        "Auto-selected compatible manifest version: {}",
+                        selected_version.version
+                    );
+
+                    // Download if not already cached
+                    if !manifest_manager.is_downloaded(&selected_version) {
+                        info!(
+                            "Downloading compatible manifest version {}...",
+                            selected_version.version
+                        );
+                        manifest_manager
+                            .download_version(&selected_version, &client)
+                            .await
+                            .map_err(AppError::Manifest)?;
+                    }
+
+                    // Update local versions after download
+                    manifest_manager
+                        .discover_local_versions()
+                        .await
+                        .map_err(AppError::Manifest)?;
+
+                    if let Some(updated_version) = manifest_manager
+                        .get_available_versions()
+                        .iter()
+                        .find(|v| v.version == selected_version.version)
+                    {
+                        if let Some(local_path) = &updated_version.local_path {
+                            return Ok(local_path.clone());
+                        }
+                    }
+                }
+                Ok(None) => {
+                    warn!("No compatible manifest version found, falling back to latest available");
+
+                    // Fall back to latest available version
+                    if let Some(latest_version) =
+                        manifest_manager.get_available_versions().last().cloned()
+                    {
+                        info!("Downloading latest manifest version {} (may have compatibility issues)", latest_version.version);
+                        manifest_manager
+                            .download_version(&latest_version, &client)
+                            .await
+                            .map_err(AppError::Manifest)?;
+
+                        // Update local versions after download
+                        manifest_manager
+                            .discover_local_versions()
+                            .await
+                            .map_err(AppError::Manifest)?;
+
+                        if let Some(updated_version) = manifest_manager
+                            .get_available_versions()
+                            .iter()
+                            .find(|v| v.version == latest_version.version)
+                        {
+                            if let Some(local_path) = &updated_version.local_path {
+                                return Ok(local_path.clone());
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to auto-select compatible manifest version: {}", e);
+
+                    // Fall back to latest available version
+                    if let Some(latest_version) =
+                        manifest_manager.get_available_versions().last().cloned()
+                    {
+                        info!(
+                            "Downloading latest manifest version {} (compatibility check failed)",
+                            latest_version.version
+                        );
+                        manifest_manager
+                            .download_version(&latest_version, &client)
+                            .await
+                            .map_err(AppError::Manifest)?;
+
+                        // Update local versions after download
+                        manifest_manager
+                            .discover_local_versions()
+                            .await
+                            .map_err(AppError::Manifest)?;
+
+                        if let Some(updated_version) = manifest_manager
+                            .get_available_versions()
+                            .iter()
+                            .find(|v| v.version == latest_version.version)
+                        {
+                            if let Some(local_path) = &updated_version.local_path {
+                                return Ok(local_path.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            // No authentication available, can't check compatibility online
+            // Try to use any locally cached manifest
+            if let Some(latest_version) = manifest_manager.get_available_versions().last() {
+                if let Some(local_path) = &latest_version.local_path {
+                    if local_path.exists() {
+                        warn!("Using cached manifest version {} (no authentication for compatibility check)", latest_version.version);
+                        return Ok(local_path.clone());
+                    }
+                }
+            }
         }
     }
 

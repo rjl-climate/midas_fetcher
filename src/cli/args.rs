@@ -101,6 +101,18 @@ pub struct DownloadArgs {
     /// Enable verbose logging and detailed progress information
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Use specific manifest version (e.g., 202407)
+    #[arg(long)]
+    pub manifest_version: Option<u32>,
+
+    /// Use the latest available manifest version (overrides compatibility checks)
+    #[arg(long)]
+    pub use_latest_manifest: bool,
+
+    /// Allow incompatible manifest versions
+    #[arg(long)]
+    pub allow_incompatible_manifest: bool,
 }
 
 /// Arguments for manifest management
@@ -269,6 +281,9 @@ mod tests {
             force: false,
             dry_run: false,
             verbose: false,
+            manifest_version: None,
+            use_latest_manifest: false,
+            allow_incompatible_manifest: false,
         };
 
         // Valid configuration
@@ -290,6 +305,9 @@ mod tests {
             force: false,
             dry_run: false,
             verbose: false,
+            manifest_version: None,
+            use_latest_manifest: false,
+            allow_incompatible_manifest: false,
         };
 
         let args_v0 = DownloadArgs {
@@ -318,6 +336,9 @@ mod tests {
             force: false,
             dry_run: false,
             verbose: false,
+            manifest_version: None,
+            use_latest_manifest: false,
+            allow_incompatible_manifest: false,
         };
 
         // No filtering

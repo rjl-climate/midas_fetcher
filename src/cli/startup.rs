@@ -462,8 +462,89 @@ pub async fn check_manifest_update_needed() -> Result<ManifestUpdateStatus> {
     })
 }
 
-/// Download manifest files from CEDA
+/// Download manifest files from CEDA using the new version management system
 pub async fn download_manifest_files() -> Result<()> {
+    use crate::app::manifest::ManifestVersionManager;
+    use crate::app::{CacheManager, CedaClient};
+
+    // Create authenticated client
+    let client = CedaClient::new().await.map_err(AppError::Auth)?;
+
+    // Get cache directory
+    let cache = CacheManager::new(Default::default())
+        .await
+        .map_err(AppError::Cache)?;
+    let cache_root = cache.cache_root();
+
+    // Create manifest version manager
+    let mut manifest_manager = ManifestVersionManager::new(cache_root.to_path_buf());
+
+    // Discover available manifest versions
+    info!("Discovering available manifest versions...");
+    manifest_manager
+        .discover_available_versions(&client)
+        .await
+        .map_err(AppError::Manifest)?;
+
+    // Auto-select the latest compatible version
+    info!("Selecting latest compatible manifest version...");
+    match manifest_manager
+        .auto_select_compatible_version(&client)
+        .await
+    {
+        Ok(Some(selected_version)) => {
+            info!(
+                "Selected compatible manifest version: {}",
+                selected_version.version
+            );
+
+            // Download the selected version if not already cached
+            if !manifest_manager.is_downloaded(&selected_version) {
+                info!(
+                    "Downloading manifest version {}...",
+                    selected_version.version
+                );
+                manifest_manager
+                    .download_version(&selected_version, &client)
+                    .await
+                    .map_err(AppError::Manifest)?;
+            } else {
+                info!(
+                    "Manifest version {} already cached",
+                    selected_version.version
+                );
+            }
+
+            Ok(())
+        }
+        Ok(None) => {
+            warn!("No compatible manifest version found. Falling back to latest available.");
+
+            // If no compatible version found, use the latest available
+            let latest_version = manifest_manager.get_available_versions().last().cloned();
+            if let Some(latest_version) = latest_version {
+                info!(
+                    "Downloading latest manifest version {} (may have compatibility issues)",
+                    latest_version.version
+                );
+                manifest_manager
+                    .download_version(&latest_version, &client)
+                    .await
+                    .map_err(AppError::Manifest)?;
+                Ok(())
+            } else {
+                Err(AppError::generic("No manifest versions available"))
+            }
+        }
+        Err(e) => {
+            warn!("Failed to select compatible manifest version: {}", e);
+            Err(AppError::Manifest(e))
+        }
+    }
+}
+
+/// Legacy function for backward compatibility
+pub async fn download_manifest_files_legacy() -> Result<()> {
     use crate::app::{CacheManager, CedaClient};
     use std::fs::File;
     use std::io::Write;
