@@ -11,8 +11,8 @@ use tempfile::TempDir;
 
 use crate::app::hash::Md5Hash;
 use crate::app::models::{DatasetFileInfo, FileInfo};
-use crate::app::{CacheConfig, CacheManager, CedaClient, WorkQueue};
 use crate::app::worker::WorkerConfig;
+use crate::app::{CacheConfig, CacheManager, CedaClient, WorkQueue};
 
 use super::*;
 
@@ -99,7 +99,7 @@ async fn test_coordinator_creation() {
     let coordinator = Coordinator::new(config.clone(), queue, cache, client);
 
     assert_eq!(coordinator.config.worker_count, config.worker_count);
-    
+
     // Test initial statistics
     let stats = coordinator.get_stats().await;
     assert_eq!(stats.files_completed, 0);
@@ -115,13 +115,7 @@ async fn test_coordinator_with_expected_files() {
     let config = create_test_config();
     let (queue, cache, client) = create_test_components().await;
 
-    let coordinator = Coordinator::new_with_expected_files(
-        config,
-        queue,
-        cache,
-        client,
-        100
-    );
+    let coordinator = Coordinator::new_with_expected_files(config, queue, cache, client, 100);
 
     let stats = coordinator.get_stats().await;
     assert_eq!(stats.total_files, 100);

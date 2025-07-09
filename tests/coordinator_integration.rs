@@ -8,12 +8,12 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 
-use midas_fetcher::app::{
-    CacheConfig, CacheManager, CedaClient, Coordinator, CoordinatorConfig, WorkQueue
-};
 use midas_fetcher::app::hash::Md5Hash;
 use midas_fetcher::app::models::{DatasetFileInfo, FileInfo, QualityControlVersion};
 use midas_fetcher::app::worker::WorkerConfig;
+use midas_fetcher::app::{
+    CacheConfig, CacheManager, CedaClient, Coordinator, CoordinatorConfig, WorkQueue,
+};
 
 /// Create integration test coordinator configuration
 ///
@@ -44,7 +44,8 @@ fn create_integration_test_config() -> CoordinatorConfig {
 ///
 /// Returns fully configured components for integration testing
 /// with temporary storage and real client connections.
-async fn create_integration_test_components() -> (Arc<WorkQueue>, Arc<CacheManager>, Arc<CedaClient>) {
+async fn create_integration_test_components() -> (Arc<WorkQueue>, Arc<CacheManager>, Arc<CedaClient>)
+{
     let temp_dir = TempDir::new().unwrap();
     let cache_config = CacheConfig {
         cache_root: Some(temp_dir.path().to_path_buf()),
@@ -62,12 +63,17 @@ async fn create_integration_test_components() -> (Arc<WorkQueue>, Arc<CacheManag
 /// Create test file info for integration testing
 fn create_integration_test_file(name: &str, size: Option<u64>) -> FileInfo {
     // Create a unique hash based on the file name to avoid deduplication
-    let mut hash_string = format!("{:x}", name.as_bytes().iter().fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64)));
+    let mut hash_string = format!(
+        "{:x}",
+        name.as_bytes()
+            .iter()
+            .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64))
+    );
     while hash_string.len() < 32 {
         hash_string.push('0');
     }
     let hash = Md5Hash::from_hex(&hash_string[0..32]).unwrap();
-    
+
     FileInfo {
         hash,
         relative_path: format!("./test/{}", name),
@@ -125,18 +131,13 @@ async fn test_coordinator_with_known_file_count() {
     for i in 0..expected_files {
         let file_info = create_integration_test_file(
             &format!("test_file_{}.csv", i),
-            Some(1024 * (i + 1) as u64)
+            Some(1024 * (i + 1) as u64),
         );
         queue.add_work(file_info).await.unwrap();
     }
 
-    let coordinator = Coordinator::new_with_expected_files(
-        config,
-        queue,
-        cache,
-        client,
-        expected_files
-    );
+    let coordinator =
+        Coordinator::new_with_expected_files(config, queue, cache, client, expected_files);
 
     // Get initial stats
     let initial_stats = coordinator.get_stats().await;
@@ -156,20 +157,12 @@ async fn test_coordinator_statistics_tracking() {
     let config = create_integration_test_config();
     let (queue, cache, client) = create_integration_test_components().await;
 
-    let coordinator = Coordinator::new_with_expected_files(
-        config,
-        queue.clone(),
-        cache,
-        client,
-        10
-    );
+    let coordinator =
+        Coordinator::new_with_expected_files(config, queue.clone(), cache, client, 10);
 
     // Add some test work
     for i in 0..3 {
-        let file_info = create_integration_test_file(
-            &format!("stats_test_{}.csv", i),
-            Some(2048)
-        );
+        let file_info = create_integration_test_file(&format!("stats_test_{}.csv", i), Some(2048));
         queue.add_work(file_info).await.unwrap();
     }
 

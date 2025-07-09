@@ -115,6 +115,12 @@ pub mod ceda {
     /// Manifest download base URL
     pub const MANIFEST_DOWNLOAD_BASE_URL: &str = "https://data.ceda.ac.uk/neodc/esacci";
 
+    /// MIDAS open data base URL for manifest discovery
+    pub const MIDAS_OPEN_BASE_URL: &str = "https://data.ceda.ac.uk/badc/ukmo-midas-open";
+
+    /// MIDAS directory URL for manifest version discovery
+    pub const MIDAS_DIRECTORY_URL: &str = "https://data.ceda.ac.uk/badc/ukmo-midas-open/";
+
     /// Test file URL for authentication verification
     pub const TEST_FILE_URL: &str = "https://data.ceda.ac.uk/badc/ukmo-midas-open/data/uk-daily-temperature-obs/dataset-version-202407/devon/01381_twist/qc-version-1/midas-open_uk-daily-temperature-obs_dv-202407_devon_01381_twist_qcv-1_1980.csv";
 }
@@ -294,7 +300,9 @@ pub mod coordinator {
 
 // Re-export commonly used constants for convenience
 pub use auth::{CEDA_AUTH_BASE_URL, CEDA_LOGIN_URL};
-pub use ceda::{BASE_URL as CEDA_BASE_URL, TEST_FILE_URL};
+pub use ceda::{
+    BASE_URL as CEDA_BASE_URL, MIDAS_DIRECTORY_URL, MIDAS_OPEN_BASE_URL, TEST_FILE_URL,
+};
 pub use env::{PASSWORD as ENV_PASSWORD, USERNAME as ENV_USERNAME};
 pub use files::{MANIFEST_FILE_NAME, TEMP_FILE_SUFFIX};
 pub use http::{DEFAULT_TIMEOUT as HTTP_TIMEOUT, USER_AGENT};

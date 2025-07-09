@@ -23,9 +23,7 @@ pub struct BackgroundTaskManager {
 impl BackgroundTaskManager {
     /// Create a new background task manager
     pub fn new() -> Self {
-        Self {
-            tasks: Vec::new(),
-        }
+        Self { tasks: Vec::new() }
     }
 
     /// Start periodic cleanup task for stale reservations and timeouts
@@ -184,7 +182,10 @@ impl BackgroundTaskManager {
                 .await
                 .is_err()
             {
-                warn!("Background task shutdown timed out after {:?}", coordinator::TASK_SHUTDOWN_TIMEOUT);
+                warn!(
+                    "Background task shutdown timed out after {:?}",
+                    coordinator::TASK_SHUTDOWN_TIMEOUT
+                );
             }
         }
 
@@ -241,12 +242,12 @@ mod tests {
     async fn test_cleanup_task_startup() {
         let (queue, cache) = create_test_components().await;
         let (_, shutdown_rx) = broadcast::channel(1);
-        
+
         let mut manager = BackgroundTaskManager::new();
         manager.start_cleanup_task(cache, queue, shutdown_rx);
-        
+
         assert_eq!(manager.task_count(), 1);
-        
+
         // Give the task a moment to start
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -259,12 +260,12 @@ mod tests {
     async fn test_periodic_logging_task_startup() {
         let (queue, _) = create_test_components().await;
         let (_, shutdown_rx) = broadcast::channel(1);
-        
+
         let mut manager = BackgroundTaskManager::new();
         manager.start_periodic_logging_task(queue, shutdown_rx);
-        
+
         assert_eq!(manager.task_count(), 1);
-        
+
         // Give the task a moment to start
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -277,12 +278,12 @@ mod tests {
     async fn test_timeout_monitoring_task_startup() {
         let (queue, _) = create_test_components().await;
         let (_, shutdown_rx) = broadcast::channel(1);
-        
+
         let mut manager = BackgroundTaskManager::new();
         manager.start_timeout_monitoring_task(queue, shutdown_rx);
-        
+
         assert_eq!(manager.task_count(), 1);
-        
+
         // Give the task a moment to start
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -295,14 +296,14 @@ mod tests {
     async fn test_multiple_task_management() {
         let (queue, cache) = create_test_components().await;
         let (tx, _) = broadcast::channel(1);
-        
+
         let mut manager = BackgroundTaskManager::new();
         manager.start_cleanup_task(cache, queue.clone(), tx.subscribe());
         manager.start_periodic_logging_task(queue.clone(), tx.subscribe());
         manager.start_timeout_monitoring_task(queue, tx.subscribe());
-        
+
         assert_eq!(manager.task_count(), 3);
-        
+
         // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -315,24 +316,24 @@ mod tests {
     async fn test_graceful_shutdown() {
         let (queue, cache) = create_test_components().await;
         let (tx, _) = broadcast::channel(1);
-        
+
         let mut manager = BackgroundTaskManager::new();
         manager.start_cleanup_task(cache, queue.clone(), tx.subscribe());
         manager.start_periodic_logging_task(queue, tx.subscribe());
-        
+
         assert_eq!(manager.task_count(), 2);
-        
+
         // Give tasks a moment to start
         tokio::time::sleep(Duration::from_millis(10)).await;
-        
+
         // Trigger shutdown
         let _ = tx.send(());
-        
+
         // Shutdown should complete without hanging
         let shutdown_start = Instant::now();
         manager.shutdown_all().await;
         let shutdown_duration = shutdown_start.elapsed();
-        
+
         // Should complete well before the timeout
         assert!(shutdown_duration < coordinator::TASK_SHUTDOWN_TIMEOUT);
     }

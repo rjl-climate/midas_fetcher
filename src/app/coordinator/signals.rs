@@ -25,7 +25,7 @@ impl SignalHandler {
     /// When a signal is received, it broadcasts shutdown to all subscribers.
     pub fn setup(&self) -> JoinHandle<()> {
         let shutdown_tx = self.shutdown_tx.clone();
-        
+
         tokio::spawn(async move {
             let ctrl_c = async {
                 signal::ctrl_c()
@@ -114,7 +114,7 @@ mod tests {
         // Just test that we can create and setup the handler
         // We can't easily test actual signal handling in unit tests
         let _handle = handler.setup();
-        
+
         // Let the task start
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -134,10 +134,7 @@ mod tests {
         });
 
         // Wait for shutdown signal with timeout
-        let result = timeout(
-            Duration::from_millis(200),
-            wait_for_shutdown_signal(rx)
-        ).await;
+        let result = timeout(Duration::from_millis(200), wait_for_shutdown_signal(rx)).await;
 
         assert!(result.is_ok());
     }

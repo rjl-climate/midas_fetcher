@@ -211,7 +211,8 @@ impl CompletionStatus {
     /// Check if all work appears complete
     pub fn is_complete(&self) -> bool {
         let queue_empty = self.pending == 0 && self.in_progress == 0;
-        let all_files_processed = self.total_expected > 0 && self.total_processed >= self.total_expected;
+        let all_files_processed =
+            self.total_expected > 0 && self.total_processed >= self.total_expected;
         let can_complete_on_empty_queue = self.total_expected == 0 || self.total_processed > 0;
 
         (queue_empty && can_complete_on_empty_queue) || all_files_processed
@@ -233,11 +234,7 @@ impl CompletionStatus {
         } else {
             format!(
                 "{} files processed: {} pending, {} in progress, {} completed, {} failed",
-                self.total_processed,
-                self.pending,
-                self.in_progress,
-                self.completed,
-                self.failed
+                self.total_processed, self.pending, self.in_progress, self.completed, self.failed
             )
         }
     }
@@ -257,7 +254,12 @@ mod tests {
 
     fn create_test_file_info(name: &str) -> FileInfo {
         // Create a unique hash based on the file name to avoid deduplication
-        let mut hash_string = format!("{:x}", name.as_bytes().iter().fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64)));
+        let mut hash_string = format!(
+            "{:x}",
+            name.as_bytes()
+                .iter()
+                .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64))
+        );
         // Pad to 32 characters
         while hash_string.len() < 32 {
             hash_string.push('0');
@@ -293,7 +295,7 @@ mod tests {
     async fn test_completion_detector_creation() {
         let queue = create_test_queue().await;
         let detector = CompletionDetector::new(queue, 100);
-        
+
         let status = detector.get_completion_status().await;
         assert_eq!(status.total_expected, 100);
         assert_eq!(status.total_processed, 0);

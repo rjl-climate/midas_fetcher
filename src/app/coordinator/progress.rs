@@ -213,7 +213,9 @@ impl ProgressAggregator {
         // For simplicity, we assume worker progress represents cumulative totals
         // In a real implementation, this might need more sophisticated tracking
         self.total_files_completed = self.total_files_completed.max(progress.files_completed);
-        self.total_bytes_downloaded = self.total_bytes_downloaded.max(progress.total_bytes_downloaded);
+        self.total_bytes_downloaded = self
+            .total_bytes_downloaded
+            .max(progress.total_bytes_downloaded);
         self.last_update = Instant::now();
     }
 
@@ -248,8 +250,8 @@ impl Default for ProgressAggregator {
 mod tests {
     use super::*;
     use crate::app::worker::WorkerStatus;
-    use chrono;
     use crate::app::WorkQueue;
+    use chrono;
 
     /// Test rate calculator functionality
     ///
@@ -258,20 +260,20 @@ mod tests {
     #[test]
     fn test_rate_calculator() {
         let mut calculator = RateCalculator::new(3);
-        
+
         // No samples should return 0 rate
         assert_eq!(calculator.calculate_rate(), 0.0);
         assert_eq!(calculator.sample_count(), 0);
-        
+
         // Add samples (simulating 1KB/s over 3 seconds)
         let _rate1 = calculator.add_sample(1024);
         assert_eq!(calculator.sample_count(), 1);
-        
+
         std::thread::sleep(std::time::Duration::from_millis(10));
         let rate2 = calculator.add_sample(2048);
         assert!(rate2 > 0.0);
         assert_eq!(calculator.sample_count(), 2);
-        
+
         // Clear and verify
         calculator.clear();
         assert_eq!(calculator.sample_count(), 0);
@@ -284,7 +286,7 @@ mod tests {
     #[test]
     fn test_progress_aggregator() {
         let mut aggregator = ProgressAggregator::new();
-        
+
         let progress = WorkerProgress {
             worker_id: 1,
             file_info: None,
@@ -298,15 +300,15 @@ mod tests {
             total_bytes_downloaded: 10240,
             error_message: None,
         };
-        
+
         aggregator.update_worker_progress(1, &progress);
         aggregator.set_active_workers(4);
-        
+
         let (files, bytes, workers, _) = aggregator.get_aggregated_stats();
         assert_eq!(files, 10);
         assert_eq!(bytes, 10240);
         assert_eq!(workers, 4);
-        
+
         // Test staleness
         assert!(!aggregator.is_stale(Duration::from_secs(1)));
     }
@@ -320,25 +322,20 @@ mod tests {
         let stats = Arc::new(RwLock::new(DownloadStats::default()));
         let queue = Arc::new(WorkQueue::new());
         let update_interval = Duration::from_millis(100);
-        
-        let monitor = ProgressMonitor::new(
-            stats.clone(),
-            queue,
-            update_interval,
-            false
-        );
-        
+
+        let monitor = ProgressMonitor::new(stats.clone(), queue, update_interval, false);
+
         // Create channels for testing
         let (_progress_tx, progress_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-        
+
         // Start monitoring (should not panic)
         let handle = monitor.start_monitoring(progress_rx, shutdown_rx);
-        
+
         // Send shutdown signal
         tokio::time::sleep(Duration::from_millis(10)).await;
         let _ = shutdown_tx.send(());
-        
+
         // Wait for shutdown
         let _ = handle.await;
     }
@@ -352,14 +349,14 @@ mod tests {
         let stats = Arc::new(RwLock::new(DownloadStats::default()));
         let queue = Arc::new(WorkQueue::new());
         let update_interval = Duration::from_millis(100);
-        
+
         let monitor = ProgressMonitor::new(
             stats.clone(),
             queue,
             update_interval,
-            true // verbose mode
+            true, // verbose mode
         );
-        
+
         let progress = WorkerProgress {
             worker_id: 1,
             file_info: None,
@@ -373,10 +370,12 @@ mod tests {
             total_bytes_downloaded: 5120,
             error_message: None,
         };
-        
+
         let mut bytes_window = Vec::new();
-        monitor.process_worker_update(progress, &mut bytes_window).await;
-        
+        monitor
+            .process_worker_update(progress, &mut bytes_window)
+            .await;
+
         // Verify stats were updated
         let stats_guard = stats.read().await;
         assert_eq!(stats_guard.total_bytes_downloaded, 5120);
@@ -390,16 +389,16 @@ mod tests {
     #[test]
     fn test_rate_window_management() {
         let mut calculator = RateCalculator::new(3);
-        
+
         // Add more samples than window size
         for i in 0..5 {
             calculator.add_sample((i + 1) * 1024);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        
+
         // Window should be limited to specified size
         assert_eq!(calculator.sample_count(), 3);
-        
+
         // Rate should be calculated from the most recent samples
         let rate = calculator.calculate_rate();
         assert!(rate > 0.0);

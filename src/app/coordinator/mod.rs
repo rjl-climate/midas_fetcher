@@ -201,7 +201,8 @@ impl Coordinator {
             self.config.progress_update_interval,
             self.config.verbose_logging,
         );
-        let progress_handle = progress_monitor.start_monitoring(progress_rx, shutdown_tx.subscribe());
+        let progress_handle =
+            progress_monitor.start_monitoring(progress_rx, shutdown_tx.subscribe());
 
         // Start the worker pool
         if let Err(e) = worker_pool.start(progress_tx).await {
@@ -220,14 +221,8 @@ impl Coordinator {
             self.queue.clone(),
             shutdown_tx.subscribe(),
         );
-        background_tasks.start_periodic_logging_task(
-            self.queue.clone(),
-            shutdown_tx.subscribe(),
-        );
-        background_tasks.start_timeout_monitoring_task(
-            self.queue.clone(),
-            shutdown_tx.subscribe(),
-        );
+        background_tasks.start_periodic_logging_task(self.queue.clone(), shutdown_tx.subscribe());
+        background_tasks.start_timeout_monitoring_task(self.queue.clone(), shutdown_tx.subscribe());
 
         // Create completion detector
         let expected_files = {
@@ -258,14 +253,22 @@ impl Coordinator {
         let _ = progress_handle.await;
 
         // Shutdown worker pool
-        let shutdown_errors = match tokio::time::timeout(self.config.shutdown_timeout, worker_pool.shutdown()).await {
+        let shutdown_errors = match tokio::time::timeout(
+            self.config.shutdown_timeout,
+            worker_pool.shutdown(),
+        )
+        .await
+        {
             Ok(Ok(())) => Vec::new(),
             Ok(Err(e)) => {
                 error!("Worker pool shutdown error: {}", e);
                 vec![format!("Worker pool shutdown error: {}", e)]
             }
             Err(_) => {
-                error!("Worker pool shutdown timed out after {:?}", self.config.shutdown_timeout);
+                error!(
+                    "Worker pool shutdown timed out after {:?}",
+                    self.config.shutdown_timeout
+                );
                 vec!["Worker pool shutdown timed out".to_string()]
             }
         };

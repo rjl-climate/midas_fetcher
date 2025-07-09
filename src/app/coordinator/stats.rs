@@ -104,9 +104,8 @@ impl DownloadStats {
                 let remaining_bytes = remaining_files as f64 * avg_file_size;
                 let eta_seconds = remaining_bytes / self.download_rate_bps;
 
-                self.estimated_completion = Some(
-                    Utc::now() + chrono::Duration::seconds(eta_seconds as i64)
-                );
+                self.estimated_completion =
+                    Some(Utc::now() + chrono::Duration::seconds(eta_seconds as i64));
             } else {
                 self.estimated_completion = Some(Utc::now());
             }
@@ -202,7 +201,7 @@ impl SessionResult {
 /// Format a duration as human-readable string
 fn format_duration(duration: Duration) -> String {
     let total_secs = duration.as_secs();
-    
+
     if total_secs < 60 {
         format!("{}s", total_secs)
     } else if total_secs < 3600 {
@@ -255,14 +254,15 @@ mod tests {
     /// units (B/s, KB/s, MB/s) with appropriate precision.
     #[test]
     fn test_download_rate_formatting() {
-        let mut stats = DownloadStats::default();
-        
-        stats.download_rate_bps = 512.0;
+        let mut stats = DownloadStats {
+            download_rate_bps: 512.0,
+            ..Default::default()
+        };
         assert_eq!(stats.format_download_rate(), "512.0 B/s");
-        
+
         stats.download_rate_bps = 1536.0; // 1.5 KB/s
         assert_eq!(stats.format_download_rate(), "1.5 KB/s");
-        
+
         stats.download_rate_bps = 2.5 * 1024.0 * 1024.0; // 2.5 MB/s
         assert_eq!(stats.format_download_rate(), "2.5 MB/s");
     }

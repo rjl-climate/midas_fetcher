@@ -72,7 +72,7 @@ pub use hash::Md5Hash;
 pub use manifest::{
     collect_all_files, collect_datasets_and_years, fill_queue_from_manifest, filter_manifest_files,
     get_selection_options, validate_manifest, DatasetSummary, ManifestConfig, ManifestStats,
-    ManifestStreamer,
+    ManifestStreamer, ManifestVersionManager,
 };
 pub use models::{
     generate_file_id, parse_manifest_line, DatasetFileInfo, FileInfo, QualityControlVersion,

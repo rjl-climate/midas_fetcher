@@ -130,10 +130,11 @@ mod tests {
     /// and appropriate error messages are returned.
     #[test]
     fn test_config_validation() {
-        let mut config = CoordinatorConfig::default();
-
         // Test zero progress interval
-        config.progress_update_interval = Duration::ZERO;
+        let mut config = CoordinatorConfig {
+            progress_update_interval: Duration::ZERO,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
 
         // Reset and test zero shutdown timeout
