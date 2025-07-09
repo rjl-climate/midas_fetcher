@@ -189,6 +189,34 @@ impl Coordinator {
         }
     }
 
+    /// Create a new coordinator with expected file count for accurate progress tracking
+    pub fn new_with_expected_files(
+        config: CoordinatorConfig,
+        queue: Arc<WorkQueue>,
+        cache: Arc<CacheManager>,
+        client: Arc<CedaClient>,
+        expected_files: usize,
+    ) -> Self {
+        let stats = DownloadStats {
+            total_files: expected_files,
+            ..Default::default()
+        };
+        let stats = Arc::new(RwLock::new(stats));
+
+        Self {
+            config,
+            queue,
+            cache,
+            client,
+            stats,
+            shutdown_tx: None,
+            worker_pool: None,
+            cleanup_task: None,
+            periodic_task: None,
+            timeout_monitor: None,
+        }
+    }
+
     /// Run the complete download process with orchestration
     ///
     /// This is the main entry point that:
@@ -215,7 +243,13 @@ impl Coordinator {
         {
             let mut stats = self.stats.write().await;
             stats.session_start = Utc::now();
-            stats.total_files = self.queue.stats().await.total_added as usize;
+
+            // Only update total_files if it wasn't set during construction
+            // This allows pull-based streaming to provide accurate file counts
+            if stats.total_files == 0 {
+                stats.total_files = self.queue.stats().await.total_added as usize;
+            }
+
             stats.active_workers = self.config.worker_count;
         }
 
@@ -674,6 +708,11 @@ impl Coordinator {
             stats.total_files as u64
         };
 
+        // Progress-based timeout tracking
+        let mut last_progress_time = std::time::Instant::now();
+        let mut last_total_processed = 0u64;
+        let progress_timeout = std::time::Duration::from_secs(30 * 60); // 30 minutes of no progress
+
         loop {
             // Force cleanup of any stale queue state before checking completion
             if iteration_count % 50 == 0 {
@@ -701,7 +740,16 @@ impl Coordinator {
             let total_processed = queue_stats.completed_count + queue_stats.abandoned_count;
             let strict_queue_empty =
                 queue_stats.pending_count == 0 && queue_stats.in_progress_count == 0;
-            let all_files_processed = total_processed >= expected_total_files;
+
+            // Only use file count completion if we have a valid total (> 0)
+            let all_files_processed =
+                expected_total_files > 0 && total_processed >= expected_total_files;
+
+            // Check for progress and update timeout tracking
+            if total_processed > last_total_processed {
+                last_progress_time = std::time::Instant::now();
+                last_total_processed = total_processed;
+            }
 
             // Log completion checks periodically
             if iteration_count % 600 == 0 {
@@ -717,10 +765,16 @@ impl Coordinator {
                 );
             }
 
+            // Only consider queue empty as completion if we have either:
+            // 1. No expected total files (legacy behavior)
+            // 2. Have processed some files already (not startup state)
+            let can_complete_on_empty_queue = expected_total_files == 0 || total_processed > 0;
+            let queue_empty_completion = strict_queue_empty && can_complete_on_empty_queue;
+
             // Check if all work is done using enhanced logic
-            if strict_queue_empty || all_files_processed {
+            if queue_empty_completion || all_files_processed {
                 // If we completed by file count but queue isn't empty, log diagnostics
-                if all_files_processed && !strict_queue_empty {
+                if all_files_processed && !queue_empty_completion {
                     warn!(
                         "All files processed ({}/{}) but queue not empty: pending={}, in_progress={}",
                         total_processed,
@@ -750,10 +804,14 @@ impl Coordinator {
                 break;
             }
 
-            // Safety mechanism: prevent infinite loops
-            if iteration_count > 6000 {
-                // 10 minutes at 100ms intervals
-                error!("Completion detection timeout after 10 minutes - forcing exit");
+            // Progress-based timeout: only timeout if no progress for extended period
+            if last_progress_time.elapsed() > progress_timeout {
+                error!(
+                    "No progress for {} minutes (processed {}/{}) - forcing exit",
+                    progress_timeout.as_secs() / 60,
+                    total_processed,
+                    expected_total_files
+                );
                 break;
             }
 

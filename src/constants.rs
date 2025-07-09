@@ -180,6 +180,10 @@ pub mod workers {
     /// Prefetch count for cache operations
     pub const PREFETCH_COUNT: usize = 50;
 
+    /// Maximum pending items in queue before applying backpressure
+    /// Used for pull-based streaming to prevent memory exhaustion
+    pub const MAX_PENDING_ITEMS: usize = 50_000;
+
     /// Maximum retry attempts for failed work items
     pub const MAX_RETRIES: u32 = 3;
 

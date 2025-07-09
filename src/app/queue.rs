@@ -838,6 +838,18 @@ impl WorkQueue {
 
         timed_out
     }
+
+    /// Check if the queue has capacity for more work items
+    ///
+    /// This enables pull-based backpressure where the queue only requests
+    /// more work when it has space to handle it.
+    pub async fn has_capacity(&self) -> bool {
+        let stats = self.stats().await;
+        let total_active = stats.pending_count + stats.in_progress_count;
+
+        // Use a reasonable capacity limit to prevent memory exhaustion
+        total_active < crate::constants::workers::MAX_PENDING_ITEMS as u64
+    }
 }
 
 impl Default for WorkQueue {
@@ -1168,5 +1180,73 @@ mod tests {
         let stats = queue.stats().await;
         assert_eq!(stats.total_added, 10);
         assert_eq!(stats.pending_count, 10);
+    }
+
+    /// Test the has_capacity method for pull-based backpressure
+    #[tokio::test]
+    async fn test_has_capacity() {
+        let queue = WorkQueue::new();
+
+        // Empty queue should have capacity
+        assert!(queue.has_capacity().await);
+
+        // Add some work items
+        for i in 0..100 {
+            let file_info = create_test_file_info(&format!("test{}", i), &format!("test{}.txt", i));
+            queue.add_work(file_info).await.unwrap();
+        }
+
+        // Should still have capacity with 100 items
+        assert!(queue.has_capacity().await);
+
+        // The actual capacity test would require adding 50k items which is expensive,
+        // but we can test the logic by checking the stats
+        let stats = queue.stats().await;
+        assert_eq!(stats.pending_count, 100);
+        assert_eq!(stats.in_progress_count, 0);
+
+        // Total active (pending + in_progress) should be less than MAX_PENDING_ITEMS
+        let total_active = stats.pending_count + stats.in_progress_count;
+        assert!(total_active < crate::constants::workers::MAX_PENDING_ITEMS as u64);
+    }
+
+    /// Test pull-based manifest filling
+    #[tokio::test]
+    async fn test_pull_based_manifest_filling() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a test manifest
+        let mut manifest_file = NamedTempFile::new().unwrap();
+        writeln!(manifest_file, "50c9d1c465f3cbff652be1509c2e2a4e  ./data/uk-daily-rain-obs/dataset-version-202407/durham/01381_test/test1.csv").unwrap();
+        writeln!(manifest_file, "9734faa872681f96b144f60d29d52011  ./data/uk-daily-rain-obs/dataset-version-202407/durham/01382_test/test2.csv").unwrap();
+        writeln!(manifest_file, "ef4718f5cb7b83d0f7bb24a3a598b3a7  ./data/uk-daily-rain-obs/dataset-version-202407/durham/01383_test/test3.csv").unwrap();
+        manifest_file.flush().unwrap();
+
+        let queue = WorkQueue::new();
+        let quality_version = crate::app::models::QualityControlVersion::V1;
+
+        // Use the fill_queue_from_manifest function
+        let added_count = crate::app::manifest::fill_queue_from_manifest(
+            manifest_file.path(),
+            &queue,
+            Some("uk-daily-rain-obs"),
+            Some("durham"),
+            &quality_version,
+            None, // No limit
+        )
+        .await
+        .unwrap();
+
+        // Should have added 3 files
+        assert_eq!(added_count, 3);
+
+        // Check queue stats
+        let stats = queue.stats().await;
+        assert_eq!(stats.pending_count, 3);
+        assert_eq!(stats.in_progress_count, 0);
+
+        // Test capacity-based backpressure by checking has_capacity
+        assert!(queue.has_capacity().await);
     }
 }

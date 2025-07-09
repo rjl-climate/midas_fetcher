@@ -512,44 +512,155 @@ pub async fn download_manifest_files() -> Result<()> {
 ///
 /// * `manifest_path` - Path to the manifest file to analyze
 /// * `specified_dataset` - Dataset name if already specified
+/// * `county` - County filter for file count estimation
+/// * `quality_version` - Quality version filter for file count estimation
 ///
 /// # Returns
 ///
-/// Selected dataset name
+/// Selected dataset name and expected file count
 pub async fn interactive_selection(
     manifest_path: &Path,
     specified_dataset: Option<&str>,
-) -> Result<String> {
-    use crate::app::get_selection_options;
-
-    // If dataset is specified, no interaction needed
-    if let Some(dataset) = specified_dataset {
-        return Ok(dataset.to_string());
-    }
+    county: Option<&str>,
+    quality_version: &crate::app::models::QualityControlVersion,
+) -> Result<(String, usize)> {
+    use crate::app::collect_datasets_and_years;
 
     debug!("Starting interactive selection...");
 
-    // Get available datasets
-    let (available_datasets, _) = get_selection_options(manifest_path)
+    // Get available datasets with detailed information
+    use indicatif::{ProgressBar, ProgressStyle};
+    let datasets_spinner = ProgressBar::new_spinner();
+    datasets_spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap()
+            .tick_strings(&["◐", "◓", "◑", "◒"]),
+    );
+    datasets_spinner.set_message("Getting datasets...");
+    datasets_spinner.enable_steady_tick(std::time::Duration::from_millis(120));
+
+    let datasets_map = collect_datasets_and_years(manifest_path)
         .await
         .map_err(AppError::Manifest)?;
 
-    if available_datasets.is_empty() {
+    datasets_spinner.finish_and_clear();
+
+    if datasets_map.is_empty() {
         return Err(AppError::generic("No datasets found in manifest"));
     }
 
-    // Select dataset interactively
-    let selected_dataset = select_dataset(&available_datasets)?;
+    // Select dataset
+    let selected_dataset = if let Some(dataset) = specified_dataset {
+        dataset.to_string()
+    } else {
+        let mut available_datasets: Vec<(String, usize)> = datasets_map
+            .iter()
+            .map(|(name, summary)| (name.clone(), summary.file_count))
+            .collect();
 
-    Ok(selected_dataset)
+        // Sort by file count descending (largest datasets first)
+        available_datasets.sort_by(|a, b| b.1.cmp(&a.1));
+
+        select_dataset_with_counts(&available_datasets)?
+    };
+
+    // Get file count for the selected dataset
+    let dataset_summary = datasets_map.get(&selected_dataset).ok_or_else(|| {
+        AppError::generic(format!(
+            "Dataset '{}' not found in manifest",
+            selected_dataset
+        ))
+    })?;
+
+    // Calculate expected file count considering filters
+    let expected_files = calculate_filtered_file_count(
+        manifest_path,
+        &selected_dataset,
+        county,
+        quality_version,
+        dataset_summary.file_count,
+    )
+    .await?;
+
+    Ok((selected_dataset, expected_files))
 }
 
-/// Interactive dataset selection
-fn select_dataset(available_datasets: &[String]) -> Result<String> {
+/// Calculate expected file count considering filters
+///
+/// This function estimates the number of files that will be downloaded based on
+/// the selected dataset, county filter, and quality version filter.
+async fn calculate_filtered_file_count(
+    manifest_path: &Path,
+    dataset_name: &str,
+    county: Option<&str>,
+    quality_version: &crate::app::models::QualityControlVersion,
+    total_files: usize,
+) -> Result<usize> {
+    use crate::app::filter_manifest_files;
+
+    // For small datasets, do actual filtering to get precise count
+    if total_files <= 10000 {
+        debug!("Calculating precise file count for {} files", total_files);
+        let filtered_files =
+            filter_manifest_files(manifest_path, Some(dataset_name), county, quality_version)
+                .await
+                .map_err(AppError::Manifest)?;
+
+        return Ok(filtered_files.len());
+    }
+
+    // For large datasets, use estimation to avoid performance impact
+    // This is a rough estimate - actual filtering happens during streaming
+    let mut estimated_files = total_files;
+
+    // Apply county filter estimation (rough approximation)
+    if county.is_some() {
+        // Assume county filtering reduces files by ~70% (rough estimate)
+        estimated_files = (estimated_files as f64 * 0.7) as usize;
+    }
+
+    // Quality version filtering typically doesn't significantly reduce count
+    // as most files have the requested quality version
+
+    debug!(
+        "Estimated {} files after filtering (from {} total)",
+        estimated_files, total_files
+    );
+    Ok(estimated_files)
+}
+
+/// Format a number with commas as thousands separators
+fn format_number_with_commas(n: usize) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().collect();
+
+    for (i, ch) in chars.iter().enumerate() {
+        if i > 0 && (chars.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(*ch);
+    }
+
+    result
+}
+
+/// Interactive dataset selection with file counts
+fn select_dataset_with_counts(available_datasets: &[(String, usize)]) -> Result<String> {
     println!();
     println!("📊 Available Datasets:");
-    for (i, dataset) in available_datasets.iter().enumerate() {
-        println!("  {}. {}", i + 1, dataset);
+    println!();
+    println!("  {:<3} {:<30} {:>10}", "#", "Dataset", "Files");
+    println!(
+        "  {:<3} {:<30} {:>10}",
+        "---", "------------------------------", "----------"
+    );
+
+    for (i, (dataset, file_count)) in available_datasets.iter().enumerate() {
+        // Format number with commas
+        let formatted_count = format_number_with_commas(*file_count);
+        println!("  {:<3} {:<30} {:>10}", i + 1, dataset, formatted_count);
     }
     println!();
 
@@ -562,7 +673,7 @@ fn select_dataset(available_datasets: &[String]) -> Result<String> {
 
         if let Ok(choice) = input.trim().parse::<usize>() {
             if choice > 0 && choice <= available_datasets.len() {
-                let selected = available_datasets[choice - 1].clone();
+                let selected = available_datasets[choice - 1].0.clone();
                 println!("✅ Selected dataset: {}", selected);
                 return Ok(selected);
             }

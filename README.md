@@ -250,7 +250,7 @@ Increase these if you have a slow connection or are downloading large files.
 ### Advanced Settings Warning
 
 > ⚠️ **WARNING**: The configuration file contains many advanced settings for HTTP connections, retry logic, queue management, and progress reporting. **Do not modify these unless you understand their implications.** Incorrect settings can cause:
-> 
+>
 > - Download failures
 > - Server overload (potentially resulting in IP blocks)
 > - Performance degradation
@@ -487,15 +487,6 @@ The HTTP client implements multiple layers of protection for CEDA's infrastructu
 
 ## Performance
 
-### Benchmarks
-
-| Operation | Manual Approach | MIDAS Fetcher | Improvement |
-|-----------|----------------|---------------|-------------|
-| Cache verification | Manual file checking | Automated MD5 verification | Corruption detection |
-| 1000 file download | 45-60 minutes | 15-20 minutes | 3x faster |
-| Worker utilization | 25-50% (starvation) | 95%+ | 2-4x efficiency |
-| Memory usage | Unbounded growth | Constant (bounded) | Stable |
-
 ### Scalability Characteristics
 - **Linear worker scaling**: Performance increases linearly with worker count
 - **Memory bounded**: Constant memory usage regardless of dataset size
@@ -586,63 +577,37 @@ Please open an issue or discussion! The goal is maximum utility for the climate 
 
 ## License
 
-This project is dual-licensed under:
-- **MIT License** - see [LICENSE-MIT](LICENSE-MIT) for details
-- **Apache License 2.0** - see [LICENSE-APACHE](LICENSE-APACHE) for details
+This project is licensed under:
+- **MIT License** - see [LICENSE](LICENSE) for details
 
 You may choose either license for your use.
 
 ## Changelog
 
+### v0.1.2 (July 2025) - UX Improvements & Queue Fix
+
+- **Fixed race condition**: Downloads no longer fail immediately due to coordinator completion detection treating empty queue as finished during startup
+- **Improved dataset selection**: Dataset list now shows file counts to help users choose
+- **Better progress feedback**: Added "Getting datasets..." spinner and "Initializing workers..." spinner to explain delays
+- **Clearer verification summary**: Replaced confusing "Success rate: 70%" with intuitive "Already complete: 100%" when files are already cached
+
 ### v0.1.1 (July 2025) - Bug Fixes & Simplification
 
-#### 🐛 Bug Fixes
-- **Fixed special file downloads**: Station metadata and station log files now download correctly for all datasets
-- **Fixed cache path generation**: Special files (station-metadata, change-log, station-log) are now properly organized in dedicated directories instead of being misplaced in `/no-quality/` paths
-
-#### 🎯 Improvements  
-- **Simplified download command**: Removed confusing `--metadata-only` and `--data-only` flags
-- **Complete file coverage**: Downloads now automatically include all available file types (data, capability, metadata, station logs)
-- **Better user experience**: Single command downloads everything needed for comprehensive analysis
-
-#### 🔧 Technical Changes
-- Enhanced file type detection logic in manifest parsing
-- Simplified filtering system to always include special file types
-- Updated cache directory structure for better organization
-- Comprehensive test coverage for special file handling
+- **Fixed special file downloads**: Station metadata and station log files now download correctly
+- **Simplified download command**: Removed confusing flags, now downloads all file types automatically
+- **Better cache organization**: Special files properly organized in dedicated directories
 
 ### v0.1.0 (July 2025) - Initial Release
 
-#### ✅ Core Features Completed
-- [x] **Project foundation**: Cargo setup, dependencies, error handling
-- [x] **Authentication system**: Secure CEDA credential management
-- [x] **HTTP client**: Rate-limited, authenticated downloads with backoff
-- [x] **Data models**: Manifest parsing and file information structures
-- [x] **Work-stealing queue**: Concurrent task distribution preventing starvation
-- [x] **Cache management**: Atomic operations with reservation system
-- [x] **Download workers**: Parallel processing with error recovery
-- [x] **Progress monitoring**: Real-time updates with ETA calculations
-- [x] **CLI interface**: Complete command-line tool with all major functions
-- [x] **Library API**: Clean separation for future GUI integration
-
-#### 🎯 Validated Capabilities
-- [x] Authenticate with CEDA using session cookies
-- [x] Download 1000+ files concurrently without server errors
-- [x] Linear performance scaling with worker count (no starvation)
-- [x] Graceful interruption handling with resumable downloads
-- [x] Cache verification with MD5 hash checking and progress reporting
-- [x] Zero data corruption through atomic file operations
-- [x] All tests passing with comprehensive quality checks
-
-#### 🔮 Future Roadmap
-- [ ] **GUI application**: Tauri-based interface for non-technical users
-- [ ] **Parquet file conversion**: Companion tool to convert the cache to .parquet files for downstream processing
-- [ ] **Data analysis tools**: Built-in processing and visualization capabilities
+- **Core functionality**: Concurrent downloads with work-stealing queue
+- **CEDA authentication**: Secure credential management with session handling
+- **Cache management**: Atomic operations with MD5 verification
+- **CLI interface**: Complete command-line tool with progress monitoring
 
 
 ---
 
-**Status**: Production Ready
+**Status**: Beta
 **Maintainer**: Richard Lyon richlyon@fastmail.com
 **First Release**: 2025
-**Latest Update**: July 2025 (v0.1.1)
+**Latest Update**: July 2025 (v0.1.2)

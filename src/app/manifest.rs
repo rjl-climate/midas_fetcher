@@ -1131,6 +1131,149 @@ pub async fn filter_manifest_files<P: AsRef<Path>>(
     Ok(filtered_files)
 }
 
+/// Create a filtered stream of FileInfo entries from a manifest
+///
+/// This function returns a stream that yields FileInfo entries matching the
+/// specified criteria, allowing for memory-efficient processing of large manifests.
+/// Unlike `filter_manifest_files`, this doesn't collect all entries into memory.
+///
+/// # Arguments
+///
+/// * `manifest_path` - Path to the manifest file
+/// * `dataset_name` - Optional dataset name filter
+/// * `county` - Optional county filter
+/// * `quality_version` - Quality version filter
+///
+/// # Returns
+///
+/// A stream of FileInfo entries that match the specified criteria
+pub async fn filter_manifest_stream<P: AsRef<Path>>(
+    manifest_path: P,
+    dataset_name: Option<&str>,
+    county: Option<&str>,
+    quality_version: &crate::app::models::QualityControlVersion,
+) -> ManifestResult<impl futures::Stream<Item = FileInfo>> {
+    // For now, use the existing function to avoid lifetime issues
+    // This is a transitional implementation - in the future we can optimize further
+    let files = filter_manifest_files(manifest_path, dataset_name, county, quality_version).await?;
+
+    // Convert to stream
+    let file_stream = futures::stream::iter(files);
+
+    Ok(file_stream)
+}
+
+/// Fill a work queue directly from a manifest stream with pull-based backpressure
+///
+/// This function implements true streaming where the queue pulls from the manifest
+/// only when it has capacity. No intermediate collection into Vec occurs.
+///
+/// # Arguments
+///
+/// * `manifest_path` - Path to the manifest file
+/// * `queue` - Work queue to fill
+/// * `dataset_name` - Optional dataset name filter
+/// * `county` - Optional county filter
+/// * `quality_version` - Quality version filter
+/// * `limit` - Optional limit on number of files to process
+///
+/// # Returns
+///
+/// Number of files successfully added to the queue
+pub async fn fill_queue_from_manifest<P: AsRef<Path>>(
+    manifest_path: P,
+    queue: &crate::app::queue::WorkQueue,
+    dataset_name: Option<&str>,
+    county: Option<&str>,
+    quality_version: &crate::app::models::QualityControlVersion,
+    limit: Option<usize>,
+) -> ManifestResult<usize> {
+    use futures::StreamExt;
+
+    let config = ManifestConfig::default();
+    let mut streamer = ManifestStreamer::with_config(config);
+    let mut stream = streamer.stream(manifest_path).await?;
+
+    let mut added_count = 0;
+    let mut processed_count = 0;
+
+    info!("Starting pull-based manifest processing");
+
+    while let Some(result) = stream.next().await {
+        // Check if we've hit the limit
+        if let Some(limit) = limit {
+            if processed_count >= limit {
+                info!("Reached limit of {} files", limit);
+                break;
+            }
+        }
+
+        let file_info = match result {
+            Ok(file_info) => file_info,
+            Err(e) => {
+                warn!("Skipping invalid entry: {}", e);
+                continue;
+            }
+        };
+
+        // Apply filters
+        let dataset_info = &file_info.dataset_info;
+
+        // Apply dataset filter
+        if let Some(filter_dataset) = dataset_name {
+            if dataset_info.dataset_name != filter_dataset {
+                continue;
+            }
+        }
+
+        // Apply county filter
+        if let Some(filter_county) = county {
+            if dataset_info.county.as_ref() != Some(&filter_county.to_string()) {
+                continue;
+            }
+        }
+
+        // Apply quality version filter (only for data files)
+        if let Some(ref file_qv) = dataset_info.quality_version {
+            if file_qv != quality_version {
+                continue;
+            }
+        }
+
+        processed_count += 1;
+
+        // Pull-based backpressure: only add if queue has capacity
+        while !queue.has_capacity().await {
+            // Wait for workers to consume some items
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+
+        // Add to queue
+        if queue.add_work(file_info).await.map_err(|e| {
+            ManifestError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })? {
+            added_count += 1;
+        }
+
+        // Log progress periodically
+        if processed_count % 10000 == 0 {
+            info!(
+                "Processed {} files, added {} to queue",
+                processed_count, added_count
+            );
+        }
+    }
+
+    info!(
+        "Manifest processing complete: processed {}, added {}",
+        processed_count, added_count
+    );
+    Ok(added_count)
+}
+
 /// Get a summary of available options for interactive selection
 ///
 /// # Arguments

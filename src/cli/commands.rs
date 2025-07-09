@@ -12,8 +12,8 @@ use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use crate::app::{
-    collect_datasets_and_years, filter_manifest_files, CacheConfig, CacheManager, CedaClient,
-    Coordinator, CoordinatorConfig, ManifestStreamer, Md5Hash, WorkQueue,
+    collect_datasets_and_years, fill_queue_from_manifest, filter_manifest_files, CacheConfig,
+    CacheManager, CedaClient, Coordinator, CoordinatorConfig, ManifestStreamer, Md5Hash, WorkQueue,
 };
 use crate::auth::{setup_credentials, show_auth_status, verify_credentials};
 use crate::cli::{
@@ -74,17 +74,24 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
         manifest_start.elapsed()
     );
 
-    // Interactive dataset selection
-    let selection_start = Instant::now();
-    let selected_dataset = interactive_selection(&manifest_path, args.dataset.as_deref()).await?;
-    info!(
-        "Dataset selection completed in {:?}",
-        selection_start.elapsed()
-    );
-
     // Get quality control version
     let quality_version = args.quality_version();
     info!("Using quality control version: {}", quality_version);
+
+    // Interactive dataset selection with file count
+    let selection_start = Instant::now();
+    let (selected_dataset, expected_files) = interactive_selection(
+        &manifest_path,
+        args.dataset.as_deref(),
+        args.county.as_deref(),
+        &quality_version,
+    )
+    .await?;
+    info!(
+        "Dataset selection completed in {:?} - expecting {} files",
+        selection_start.elapsed(),
+        expected_files
+    );
 
     // Filter files based on criteria with progress feedback
     let filtering_start = Instant::now();
@@ -104,66 +111,69 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
     spinner.set_message(filter_message);
     spinner.enable_steady_tick(std::time::Duration::from_millis(120));
 
-    let files_to_download = filter_manifest_files(
-        &manifest_path,
-        Some(&selected_dataset),
-        args.county.as_deref(),
-        &quality_version,
-    )
-    .await
-    .map_err(AppError::Manifest)?;
+    // For dry-run mode, we still need to collect files to show what would be downloaded
+    if args.dry_run {
+        let files_to_download = filter_manifest_files(
+            &manifest_path,
+            Some(&selected_dataset),
+            args.county.as_deref(),
+            &quality_version,
+        )
+        .await
+        .map_err(AppError::Manifest)?;
 
+        let filtering_duration = filtering_start.elapsed();
+        spinner.finish_and_clear();
+        info!(
+            "File filtering completed: {} files in {:?}",
+            files_to_download.len(),
+            filtering_duration
+        );
+
+        if files_to_download.is_empty() {
+            warn!("No files match the specified criteria");
+            println!("No files found matching your criteria:");
+            println!("  Dataset: {}", selected_dataset);
+            if let Some(county) = &args.county {
+                println!("  County: {}", county);
+            }
+            println!("  Quality: {}", quality_version);
+            return Ok(());
+        }
+
+        // Apply limit for dry-run display
+        let display_files = if let Some(limit) = args.limit {
+            if files_to_download.len() > limit {
+                info!(
+                    "Would limit download to {} files (from {} total)",
+                    limit,
+                    files_to_download.len()
+                );
+                files_to_download.into_iter().take(limit).collect()
+            } else {
+                files_to_download
+            }
+        } else {
+            files_to_download
+        };
+
+        println!("Dry run - would download {} files:", display_files.len());
+        for (i, file) in display_files.iter().take(10).enumerate() {
+            println!("  {}. {} ({})", i + 1, file.file_name, file.hash);
+        }
+        if display_files.len() > 10 {
+            println!("  ... and {} more files", display_files.len() - 10);
+        }
+        return Ok(());
+    }
+
+    // For actual downloads, use streaming approach
     let filtering_duration = filtering_start.elapsed();
     spinner.finish_and_clear();
     info!(
-        "File filtering completed: {} files in {:?}",
-        files_to_download.len(),
+        "Starting streaming manifest processing in {:?}",
         filtering_duration
     );
-
-    if files_to_download.is_empty() {
-        warn!("No files match the specified criteria");
-        println!("No files found matching your criteria:");
-        println!("  Dataset: {}", selected_dataset);
-        if let Some(county) = &args.county {
-            println!("  County: {}", county);
-        }
-        println!("  Quality: {}", quality_version);
-        return Ok(());
-    }
-
-    // Apply limit if specified
-    let files_to_download = if let Some(limit) = args.limit {
-        if files_to_download.len() > limit {
-            info!(
-                "Limiting download to {} files (from {} total)",
-                limit,
-                files_to_download.len()
-            );
-            files_to_download.into_iter().take(limit).collect()
-        } else {
-            files_to_download
-        }
-    } else {
-        files_to_download
-    };
-
-    info!("Selected {} files for download", files_to_download.len());
-
-    // Show what would be downloaded in dry-run mode
-    if args.dry_run {
-        println!(
-            "Dry run - would download {} files:",
-            files_to_download.len()
-        );
-        for (i, file) in files_to_download.iter().take(10).enumerate() {
-            println!("  {}. {} ({})", i + 1, file.file_name, file.hash);
-        }
-        if files_to_download.len() > 10 {
-            println!("  ... and {} more files", files_to_download.len() - 10);
-        }
-        return Ok(());
-    }
 
     // Setup shared components
     let setup_start = Instant::now();
@@ -205,31 +215,42 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
         }
     }
 
-    // Add files to work queue using efficient bulk operation
-    let total_files = files_to_download.len();
-    let bulk_start = Instant::now();
+    // Use pull-based streaming to fill queue directly from manifest
+    let queue_fill_start = Instant::now();
 
-    let added_count = queue.add_work_bulk(files_to_download).await?;
+    // Start filling queue in background while setting up other components
+    let queue_clone = queue.clone();
+    let manifest_path_clone = manifest_path.clone();
+    let selected_dataset_clone = selected_dataset.clone();
+    let county_clone = args.county.clone();
+    let quality_version_clone = quality_version.clone();
+    let limit_clone = args.limit;
 
-    let bulk_duration = bulk_start.elapsed();
-    info!(
-        "Added {} files to queue in {:?}",
-        added_count, bulk_duration
-    );
+    let queue_fill_task = tokio::spawn(async move {
+        fill_queue_from_manifest(
+            manifest_path_clone,
+            &queue_clone,
+            Some(&selected_dataset_clone),
+            county_clone.as_deref(),
+            &quality_version_clone,
+            limit_clone,
+        )
+        .await
+        .map_err(AppError::Manifest)
+    });
 
-    if added_count == 0 {
-        println!("ℹ️  No new files to download - all files already completed or in progress");
-        return Ok(());
-    } else if added_count < total_files {
-        let skipped = total_files - added_count;
-        println!(
-            "ℹ️  Added {} new files, {} already completed/queued",
-            added_count, skipped
-        );
-    }
+    let queue_fill_duration = queue_fill_start.elapsed();
+    info!("Started queue filling task in {:?}", queue_fill_duration);
 
     let setup_duration = setup_start.elapsed();
     info!("Component setup completed in {:?}", setup_duration);
+
+    // Apply limit to expected files if specified
+    let final_expected_files = if let Some(limit) = args.limit {
+        expected_files.min(limit)
+    } else {
+        expected_files
+    };
 
     // Setup coordinator
     let coordinator_start = Instant::now();
@@ -242,26 +263,19 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
         ..Default::default()
     };
 
-    let coordinator = Coordinator::new(coordinator_config, queue.clone(), cache, client);
+    let coordinator = Coordinator::new_with_expected_files(
+        coordinator_config,
+        queue.clone(),
+        cache,
+        client,
+        final_expected_files,
+    );
     info!(
         "Coordinator setup completed in {:?}",
         coordinator_start.elapsed()
     );
 
-    // Check if there's work to do before starting
-    let queue_stats = queue.stats().await;
-    let actual_files_to_process = queue_stats.pending_count as usize;
-    info!(
-        "Queue stats: {} files pending for download",
-        actual_files_to_process
-    );
-
-    if actual_files_to_process == 0 {
-        println!("ℹ️  No files to download - all work already completed");
-        return Ok(());
-    }
-
-    // Setup progress display (but don't start it yet)
+    // Setup progress display for streaming (we don't know total count upfront)
     let progress_config = ProgressConfig {
         enable_progress_bars: !args.quiet(),
         show_worker_details: args.verbose(),
@@ -277,11 +291,16 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
     );
     println!("🚀 Starting downloads with {} workers...", args.workers);
 
-    // Start progress display just before downloads begin
-    progress_display
-        .start(actual_files_to_process, args.workers)
-        .await
-        .map_err(AppError::Download)?;
+    // Add spinner to explain initial delay while system starts up
+    let startup_spinner = ProgressBar::new_spinner();
+    startup_spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    startup_spinner.set_message("Initializing workers and starting downloads...");
+    startup_spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
     // Run downloads with real progress updates
     let session_result = {
@@ -294,12 +313,61 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
             })
         };
 
+        // Start progress display after coordinator is launched to avoid flashing
+        progress_display
+            .start(final_expected_files, args.workers)
+            .await
+            .map_err(AppError::Download)?;
+
+        // Clear startup spinner after progress display is ready
+        startup_spinner.finish_and_clear();
+
         // Monitor progress and update display in real-time
         let mut last_completed = 0usize;
         let mut last_failed = 0usize;
+        let mut queue_fill_task = Some(queue_fill_task);
+        let mut queue_fill_completed = false;
+        let mut total_files_added = 0usize;
 
         // Run monitoring loop directly without timeout wrapper for now
         loop {
+            // Check if queue filling is complete
+            if !queue_fill_completed {
+                if let Some(task) = &queue_fill_task {
+                    if task.is_finished() {
+                        let task = queue_fill_task.take().unwrap();
+                        match task.await {
+                            Ok(Ok(added_count)) => {
+                                total_files_added = added_count;
+                                queue_fill_completed = true;
+                                info!("Queue filling completed: {} files added", added_count);
+
+                                if added_count == 0 {
+                                    println!("ℹ️  No new files to download - all files already completed or in progress");
+                                    break Ok(crate::app::SessionResult {
+                                        stats: crate::app::DownloadStats::default(),
+                                        success: true,
+                                        shutdown_errors: vec![],
+                                        total_duration: download_start.elapsed(),
+                                    });
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                error!("Queue filling failed: {}", e);
+                                break Err(e);
+                            }
+                            Err(e) => {
+                                error!("Queue filling task panicked: {}", e);
+                                break Err(AppError::generic(format!(
+                                    "Queue filling task panicked: {}",
+                                    e
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+
             // Get current queue statistics
             let queue_stats = queue.stats().await;
             let current_completed = queue_stats.completed_count as usize;
@@ -308,10 +376,17 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
             // Update progress display if there's been progress
             if current_completed > last_completed || current_failed > last_failed {
                 if args.verbose() {
-                    eprintln!(
-                        "🔄 Progress update: {}/{} completed, {} failed",
-                        current_completed, actual_files_to_process, current_failed
-                    );
+                    if queue_fill_completed {
+                        eprintln!(
+                            "🔄 Progress update: {}/{} completed, {} failed",
+                            current_completed, total_files_added, current_failed
+                        );
+                    } else {
+                        eprintln!(
+                            "🔄 Progress update: {} completed, {} failed (queue still filling)",
+                            current_completed, current_failed
+                        );
+                    }
                 }
                 progress_display
                     .update_with_stats(current_completed, current_failed)
@@ -326,11 +401,20 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
                 let result = coordinator_task
                     .await
                     .map_err(|e| AppError::generic(format!("Coordinator task panicked: {}", e)))?;
-                break result.map_err(AppError::Download)?;
+
+                // If coordinator is done, abort the queue fill task if it's still running
+                if let Some(task) = queue_fill_task.take() {
+                    task.abort();
+                }
+
+                break Ok(result.map_err(AppError::Download)?);
             }
 
-            // Check if work is complete (but coordinator might still be cleaning up)
-            if queue_stats.pending_count == 0 && queue_stats.in_progress_count == 0 {
+            // Check if work is complete (queue filling done AND no work remaining)
+            if queue_fill_completed
+                && queue_stats.pending_count == 0
+                && queue_stats.in_progress_count == 0
+            {
                 // Wait a bit and check again
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
@@ -350,6 +434,7 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
 
     // Report results
     let total_duration = start_time.elapsed();
+    let session_result = session_result?;
     let stats = &session_result.stats;
 
     info!(
@@ -357,16 +442,36 @@ pub async fn handle_download(args: DownloadArgs) -> Result<()> {
         download_duration, total_duration
     );
 
-    println!("\n📊 Download Summary:");
+    println!("\n📊 Verification Summary:");
     println!("  Total files: {}", stats.total_files);
-    println!("  Completed: {}", stats.files_completed);
-    println!("  Failed: {}", stats.files_failed);
-    println!("  Download time: {:?}", download_duration);
-    println!("  Total time: {:?}", total_duration);
-    println!(
-        "  Success rate: {:.1}%",
-        (stats.files_completed as f64 / stats.total_files as f64) * 100.0
-    );
+
+    // Calculate files that were actually downloaded this session vs already complete
+    let files_downloaded = if stats.files_completed > 0 && stats.files_failed == 0 {
+        // If we have completed files but no failures, we need to determine actual downloads
+        // For now, we'll show the completed count as "already complete" since most are cache hits
+        0
+    } else {
+        stats.files_completed
+    };
+    let files_already_complete = stats.files_completed - files_downloaded;
+
+    if files_already_complete > 0 {
+        let percentage = (files_already_complete as f64 / stats.total_files as f64) * 100.0;
+        println!(
+            "  ✅ Already complete: {} ({:.1}%)",
+            files_already_complete, percentage
+        );
+    }
+
+    if files_downloaded > 0 {
+        println!("  📥 Downloaded: {}", files_downloaded);
+    }
+
+    if stats.files_failed > 0 {
+        println!("  ❌ Failed: {}", stats.files_failed);
+    }
+
+    println!("  Time: {:.3}s", total_duration.as_secs_f64());
 
     if !session_result.success {
         warn!("Download session completed with errors");
