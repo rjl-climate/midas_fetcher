@@ -568,16 +568,17 @@ impl ManifestConfigToml {
 impl WorkerConfigToml {
     /// Convert to runtime WorkerConfig
     pub fn to_runtime_config(&self) -> WorkerConfig {
-        WorkerConfig {
-            worker_count: self.worker_count,
-            max_retries: self.max_retries,
-            retry_base_delay: Duration::from_millis(self.retry_base_delay_ms),
-            retry_max_delay: Duration::from_secs(self.retry_max_delay_secs),
-            idle_sleep_duration: Duration::from_millis(self.idle_sleep_duration_ms),
-            progress_buffer_size: self.progress_buffer_size,
-            download_timeout: Duration::from_secs(self.download_timeout_secs),
-            detailed_progress: self.detailed_progress,
-        }
+        use crate::app::worker::WorkerConfigBuilder;
+        WorkerConfigBuilder::new()
+            .worker_count(self.worker_count)
+            .max_retries(self.max_retries)
+            .retry_base_delay(Duration::from_millis(self.retry_base_delay_ms))
+            .retry_max_delay(Duration::from_secs(self.retry_max_delay_secs))
+            .idle_sleep_duration(Duration::from_millis(self.idle_sleep_duration_ms))
+            .progress_buffer_size(self.progress_buffer_size)
+            .download_timeout(Duration::from_secs(self.download_timeout_secs))
+            .detailed_progress(self.detailed_progress)
+            .build_unchecked() // Use unchecked to avoid validation errors in TOML loading
     }
 }
 

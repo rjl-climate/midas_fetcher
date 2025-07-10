@@ -133,6 +133,10 @@ pub enum DownloadError {
     #[error("Queue error: {message}")]
     QueueError { message: String },
 
+    /// Configuration validation error
+    #[error("Configuration error: {0}")]
+    ConfigurationError(String),
+
     /// Generic error for other issues
     #[error("{0}")]
     Other(String),

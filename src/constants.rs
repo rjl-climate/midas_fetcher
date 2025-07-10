@@ -207,6 +207,42 @@ pub mod workers {
 
     /// Low priority for background work items
     pub const LOW_PRIORITY: u32 = 50;
+
+    // Speed calculation constants
+    /// Number of speed samples to use for download speed calculation
+    pub const SPEED_CALCULATION_SAMPLES: usize = 10;
+
+    /// Window size in seconds for speed calculation smoothing
+    pub const SPEED_CALCULATION_WINDOW_SECS: u64 = 60;
+
+    // Backoff and retry constants
+    /// Maximum exponential backoff multiplier (2^n where n = this value)
+    pub const MAX_BACKOFF_MULTIPLIER: u32 = 6;
+
+    /// Jitter percentage for backoff randomization (0.0-1.0)
+    pub const BACKOFF_JITTER_PERCENTAGE: f64 = 0.25;
+
+    /// Maximum idle sleep duration when no work available (milliseconds)
+    pub const MAX_IDLE_SLEEP_MS: u64 = 2000;
+
+    /// Sleep duration on worker errors (seconds)
+    pub const ERROR_SLEEP_DURATION: Duration = Duration::from_secs(1);
+
+    /// Exponential backoff multiplier for retry delays
+    pub const RETRY_BACKOFF_MULTIPLIER: u32 = 2;
+
+    /// Default download timeout (10 minutes)
+    pub const DEFAULT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+
+    // Progress reporting constants
+    /// Minimum delay between progress updates to prevent flooding
+    pub const MIN_PROGRESS_UPDATE_INTERVAL_MS: u64 = 50;
+
+    /// Default queue wait time threshold for logging (milliseconds)
+    pub const QUEUE_WAIT_LOG_THRESHOLD_MS: u64 = 50;
+
+    /// Short queue wait time threshold for logging (milliseconds)
+    pub const SHORT_QUEUE_WAIT_LOG_THRESHOLD_MS: u64 = 10;
 }
 
 /// Progress reporting and monitoring

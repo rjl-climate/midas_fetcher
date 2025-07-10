@@ -11,7 +11,6 @@ use tempfile::TempDir;
 
 use crate::app::hash::Md5Hash;
 use crate::app::models::{DatasetFileInfo, FileInfo};
-use crate::app::worker::WorkerConfig;
 use crate::app::{CacheConfig, CacheManager, CedaClient, WorkQueue};
 
 use super::*;
@@ -28,16 +27,7 @@ pub fn create_test_config() -> CoordinatorConfig {
         enable_progress_bar: false,
         verbose_logging: false,
         progress_batch_size: 5,
-        worker_config: WorkerConfig {
-            worker_count: 2,
-            max_retries: 1,
-            retry_base_delay: Duration::from_millis(10),
-            retry_max_delay: Duration::from_millis(100),
-            idle_sleep_duration: Duration::from_millis(5),
-            progress_buffer_size: 5,
-            download_timeout: Duration::from_millis(500),
-            detailed_progress: false,
-        },
+        worker_config: crate::app::worker::ConfigPresets::testing(),
     }
 }
 

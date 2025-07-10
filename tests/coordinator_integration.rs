@@ -10,7 +10,7 @@ use tempfile::TempDir;
 
 use midas_fetcher::app::hash::Md5Hash;
 use midas_fetcher::app::models::{DatasetFileInfo, FileInfo, QualityControlVersion};
-use midas_fetcher::app::worker::WorkerConfig;
+use midas_fetcher::app::worker::ConfigPresets;
 use midas_fetcher::app::{
     CacheConfig, CacheManager, CedaClient, Coordinator, CoordinatorConfig, WorkQueue,
 };
@@ -27,16 +27,7 @@ fn create_integration_test_config() -> CoordinatorConfig {
         enable_progress_bar: false,
         verbose_logging: true,
         progress_batch_size: 10,
-        worker_config: WorkerConfig {
-            worker_count: 1,
-            max_retries: 1,
-            retry_base_delay: Duration::from_millis(50),
-            retry_max_delay: Duration::from_millis(200),
-            idle_sleep_duration: Duration::from_millis(10),
-            progress_buffer_size: 10,
-            download_timeout: Duration::from_secs(2),
-            detailed_progress: true,
-        },
+        worker_config: ConfigPresets::testing(),
     }
 }
 

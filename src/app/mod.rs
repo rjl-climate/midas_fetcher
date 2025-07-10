@@ -81,7 +81,9 @@ pub use queue::{
     ConfigPresets, QueueStats, StatsReporter, WorkInfo, WorkQueue, WorkQueueConfig, WorkStatus,
 };
 pub use worker::{
-    DownloadWorker, WorkerConfig, WorkerPool, WorkerPoolStats, WorkerProgress, WorkerStatus,
+    ConfigPresets as WorkerConfigPresets, DownloadWorker, PerformanceMetrics,
+    StatsReporter as WorkerStatsReporter, WorkerConfig, WorkerPool, WorkerPoolStats,
+    WorkerProgress, WorkerStatus,
 };
 
 #[cfg(test)]
